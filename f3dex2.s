@@ -1973,6 +1973,82 @@ f3dzex_ovl2_0000168C:
 .else // No point lighting
     luv     $v29[0], 0x00B8($9)
 .endif
+
+.if celshading == 0
+
+f3dzex_ovl2_00001690:
+    vmulu   $v21, $v7, $v2[0h]
+    luv     $v4[0], 0x00A0($9)
+    vmacu   $v21, $v6, $v2[1h]
+    beq     $9, curClipRatio, f3dzex_ovl2_00001758
+     vmacu  $v21, $v5, $v2[2h]
+    vmulu   $v28, $v7, $v20[0h]
+    luv     $v3[0], 0x0088($9)
+    vmacu   $v28, $v6, $v20[1h]
+    addi    $11, $9, -0x18
+    vmacu   $v28, $v5, $v20[2h]
+    addi    $9, $9, -0x0030
+    vmrg    $v29, $v29, $v27
+    mtc2    $zero, $v4[6]
+    vmrg    $v3, $v3, $v0[0]
+    mtc2    $zero, $v4[14]
+    vand    $v21, $v21, $v31[7]
+    lpv     $v2[0], 0x00B0($9)
+    vand    $v28, $v28, $v31[7]
+    lpv     $v20[0], 0x0098($9)
+    vmulf   $v29, $v29, $v31[7]
+    vmacf   $v29, $v4, $v21[0h]
+    bne     $11, curClipRatio, f3dzex_ovl2_00001690
+     vmacf  $v29, $v3, $v28[0h]
+    vmrg    $v3, $v0, $v31[5]
+    llv     $v22[4], 0x0018(inputVtxPos)
+f3dzex_ovl2_000016F4:
+    vge     $v27, $v25, $v31[3] // v31[3] is 32512
+    andi    $11, $5, G_TEXTURE_GEN_H
+    vmulf   $v21, $v7, $v2[0h]
+    beqz    $11, f3dzex_00001870
+     suv    $v29[0], 0x0008(inputVtxPos)
+f3dzex_ovl2_00001708:
+    vmacf   $v21, $v6, $v2[1h]
+    andi    $12, $5, G_TEXTURE_GEN_LINEAR_H
+    vmacf   $v21, $v5, $v2[2h]
+    vxor    $v4, $v3, $v31[5]   // v31[5] is 0x4000
+    vmulf   $v28, $v7, $v20[0h]
+    vmacf   $v28, $v6, $v20[1h]
+    vmacf   $v28, $v5, $v20[2h]
+    lqv     $v2[0], (linearGenerateCoefficients)($zero)
+    vmudh   $v22, $v1, $v31[5]  // v31[5] is 16384
+    vmacf   $v22, $v3, $v21[0h]
+    beqz    $12, f3dzex_00001870
+     vmacf  $v22, $v4, $v28[0h]
+    vmadh   $v22, $v1, $v2[0]   // v2[0] is -0.5
+    vmulf   $v4, $v22, $v22
+    vmulf   $v3, $v22, $v31[7]  // v31[7] is 0.999969482421875
+    vmacf   $v3, $v22, $v2[2]   // v2[2] is 0.849212646484375
+.if (UCODE_IS_F3DEX2_204H)
+    vec3 equ v22
+.else
+    vec3 equ v21
+.endif
+    vmudh   $vec3, $v1, $v31[5]
+    vmacf   $v22, $v22, $v2[1]
+    j       f3dzex_00001870
+     vmacf  $v22, $v4, $v3
+
+f3dzex_ovl2_00001758:
+    vmrg    $v29, $v29, $v27
+    vmrg    $v4, $v4, $v0[0]
+    vand    $v21, $v21, $v31[7]
+    veq     $v3, $v31, $v31[3h]
+    lpv     $v2[0], 0x0080($9)
+    vmrg    $v3, $v0, $v31[5]
+    llv     $v22[4], 0x0018(inputVtxPos)
+    vmulf   $v29, $v29, $v31[7]
+    j       f3dzex_ovl2_000016F4
+     vmacf  $v29, $v4, $v21[0h]
+
+.else
+
 f3dzex_ovl2_00001690:
 LightLoop_12A0:
     vmulu    $v21, $v7, $v2[0h]      /*normal 2n+1 X * vtx all*/
@@ -2066,6 +2142,8 @@ modified and shortened */
     /*vmrg  $v4, $v4, $v0[0]*/      /*zero alpha in color*/
     /*llv   $v22[4], 0x18($14)*/    /*after no cel shading*/
     /*vmrg  $v3, $v0, $v31[5]*/     /*mask only in color*/
+
+.endif
 
 .align 8
 Overlay2End:
