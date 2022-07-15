@@ -1,8 +1,8 @@
 # Selects the microcode to assemble. Options are F3DEX2 and F3DZEX
-UCODE ?= F3DEX2
+UCODE ?= F3DZEX
 
 # Set to 1 to enable NoN(No Nearclipping). Note that no official F3DZEX exists without NoN.
-NoN ?= 0
+NoN ?= 1
 
 # Selects which version of a given microcode to build:
 # F3DEX2:
@@ -15,7 +15,7 @@ NoN ?= 0
 #  2.08J (Animal Forest) (Recommended over 2.08I due to a change properly zeroes out $v0)
 #  2.08I (Majora's Mask)
 #  2.06H (Ocarina of Time)
-VERSION ?= 2.08
+VERSION ?= 2.06H
 
 ARMIPS ?= armips
 
