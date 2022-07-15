@@ -2004,6 +2004,7 @@ it can be merged at the end. 4 instructions added below, a couple others tweaked
 /* Modified from here */
 /* 000012EC 0012FC 4A1BEF67 */  vmrg    $v29, $v29, $v27        /*1 of 4 added: select orig alpha*/
 
+f3dzex_ovl2_000016F4:
 AfterSingleLight: /* rel 12F0, abs 1438 */
 /* 000012F0 001300 30AC0040 */  andi    $12, $5, 0x0040         /*2 of 4 added: is cel shading enabled?*/
 /* 000012F4 001304 4BBF00E7 */  vmrg	$v3, $v0, $v31[5]       /*pattern in color/alpha depending on VCC*/
@@ -2023,6 +2024,7 @@ NoCelShading:
 /* 00001310 001310 11600061 */  beqz	$11, .L00001498
 /* 00001314 001314 E9DD3801 */   suv	$v29[0], 0x8($14)       /*write back color/alpha */
 
+f3dzex_ovl2_00001708:
 func_00001318:
 /* Linear texgen*/
 /* 00001318 001318 4AA23548 */  vmacf	$v21, $v6, $v2[1h]      /*tgt B Y * vtx Y*/
@@ -2047,6 +2049,7 @@ func_00001348:
 /* 0000135C 00135C 4B22B588 */  vmacf	$v22, $v22, $v2[1]
 /* 00001360 001360 08000578 */  j		func_000015E0
 /* 00001364 001364 4A032588 */   vmacf	$v22, $v4, $v3
+f3dzex_ovl2_00001758:
 .L00001368:
 /* Lighting codepath if there is only one light (or an odd number), this was
 modified and shortened */
