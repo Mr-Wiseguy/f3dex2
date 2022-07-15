@@ -924,6 +924,8 @@ f3dzex_0000182C:
     vge     $v27, $v25, $v31[3]
     llv     $v22[4], 0x0018(inputVtxPos)    // load the texture coords of the 2nd vertex into v22[4-7]
 f3dzex_00001870:
+.L00001498:
+func_000015E0:
 .if !(UCODE_IS_F3DEX2_204H) // Not in F3DEX2 2.04H
     vge     $v3, $v25, $v0[0]
 .endif
