@@ -100,3 +100,69 @@ G_MV_MATRIX   equ 0x0E
 
 inputVtxSize equ 0x10
 vtxSize equ 0x28
+
+/*
+Offsets into each value in the Mtx structure
+struct Mtx {
+    union {
+        u16 intPart[4][4];
+        struct {
+            u16 xx, yx, zx, wx,
+                xy, yy, zy, wy,
+                xz, yz, zz, wz,
+                xw, yw, zw, ww;
+        } integer;
+    }
+    union {
+        u16 fracPart[4][4];
+        struct {
+            u16 xx, yx, zx, wx,
+                xy, yy, zy, wy,
+                xz, yz, zz, wz,
+                xw, yw, zw, ww;
+        } fractional;
+    }
+};
+
+The Mtx struct is column-major (https://en.wikipedia.org/wiki/Row-_and_column-major_order).
+For example Mtx.intPart[0][1] is the value at the first column, second row.
+
+The names below use the more common M_row_col indexing.
+For example M_YXi (Mtx.intPart[0][1]) is the value at the second row, first column.
+*/
+// integer part
+M_i   equ 0x00
+M_XXi equ 0x00
+M_YXi equ 0x02
+M_ZXi equ 0x04
+M_WXi equ 0x06
+M_XYi equ 0x08
+M_YYi equ 0x0A
+M_ZYi equ 0x0C
+M_WYi equ 0x0E
+M_XZi equ 0x10
+M_YZi equ 0x12
+M_ZZi equ 0x14
+M_WZi equ 0x16
+M_XWi equ 0x18
+M_YWi equ 0x1A
+M_ZWi equ 0x1C
+M_WWi equ 0x1E
+// fractional part
+M_f   equ 0x20
+M_XXf equ 0x20
+M_YXf equ 0x22
+M_ZXf equ 0x24
+M_WXf equ 0x26
+M_XYf equ 0x28
+M_YYf equ 0x2A
+M_ZYf equ 0x2C
+M_WYf equ 0x2E
+M_XZf equ 0x30
+M_YZf equ 0x32
+M_ZZf equ 0x34
+M_WZf equ 0x36
+M_XWf equ 0x38
+M_YWf equ 0x3A
+M_ZWf equ 0x3C
+M_WWf equ 0x3E

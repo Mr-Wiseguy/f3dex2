@@ -198,7 +198,7 @@ mvpValid:
 lightsValid:
     .db 1
 numLights:
-    .db 0
+    .db 0 // Note this is actually set to (LIGHT_SIZE * amount of directional lights) (and amount >= 1, NUMLIGHTS_0 is a trick)
 
     .db 11
     .db 7 * 0x18
@@ -219,19 +219,52 @@ textureSettings2:
 geometryModeLabel:
     .dw G_CLIPPING
 
+LIGHT_SIZE equ 0x18
+
+// 0x01F0-0x0220: Light data
+lightBuffer:
+    .fill LIGHT_SIZE // G_MVO_LOOKATX
+    .fill LIGHT_SIZE // G_MVO_LOOKATY
+    .fill LIGHT_SIZE // G_MVO_L0
+    .fill LIGHT_SIZE // G_MVO_L1
+    .fill LIGHT_SIZE // G_MVO_L2
+    .fill LIGHT_SIZE // G_MVO_L3
+    .fill LIGHT_SIZE // G_MVO_L4
+    .fill LIGHT_SIZE // G_MVO_L5
+    .fill LIGHT_SIZE // G_MVO_L6
+    .fill LIGHT_SIZE // G_MVO_L7
+
 // excluding ambient light
 MAX_LIGHTS equ 7
 
-// 0x01F0-0x021F: Light data
-lightBuffer:
-    .fill ((MAX_LIGHTS + 1) * 6)
-
-// 0x0220-0x0240: Light colors
-lightColors:
-    .fill ((MAX_LIGHTS + 1) * 4)
-
-// 0x0240-0x02E0: ??
-.skip 0xA0
+// according to gbi.h
+// each entry is 0x18=24 bytes (LIGHT_SIZE)
+//
+// Note: numLights is always >= 1, even NUMLIGHTS_0 just defines a dummy no-op Light_t
+// (/!\ numLights is an offset in bytes, not a count from 1, using it as a count from 0 here though)
+//
+// LAST (numLights+1 th, 1-indexed) entry starts as Ambient_t
+// typedef struct {
+//   /* 0x00 */ unsigned char col[3];     /* ambient light value (rgba) */
+//   char      pad1;
+//   /* 0x04 */ unsigned char colc[3];    /* copy of ambient light value (rgba) */
+//   char      pad2;
+// } Ambient_t; // size = 0x8
+//
+// other entries (1st to numLights th, 1-indexed) start as Light_t
+// typedef struct {
+//   /* 0x00 */ unsigned char col[3];     /* diffuse light value (rgba) */
+//   char      pad1;
+//   /* 0x04 */ unsigned char colc[3];    /* copy of diffuse light value (rgba) */
+//   char      pad2;
+//   /* 0x08 */ signed char   dir[3];     /* direction of light (normalized) */
+//   char      pad3;
+//   /* 0x0C */ /* 4 more bytes of padding from the dword structure alignment */
+// } Light_t; // size = 0x10
+//
+// Rest of the struct on the rsp:
+// WIP
+//
 
 // 0x02E0-0x02F0: Overlay 0/1 Table
 overlayInfo0:
@@ -257,7 +290,7 @@ movewordTable:
     .dh clipRatio     // G_MW_CLIP
     .dh segmentTable  // G_MW_SEGMENT
     .dh fogFactor     // G_MW_FOG
-    .dh lightColors   // G_MW_LIGHTCOL
+    .dh lightBuffer + (2 * LIGHT_SIZE) // G_MW_LIGHTCOL
     .dh mvpValid - 1  // G_MW_FORCEMTX
     .dh perspNorm - 2 // G_MW_PERSPNORM
 
@@ -872,9 +905,9 @@ Overlay23End_:
 do_lighting equ $6
 inputVtxPos equ $14
 G_VTX_handler:
-    lhu     $20, (vertexTable)(cmd_w0)      // Load the address of the provided vertex array
-    jal     segmented_to_physical           // Convert the vertex array's segmented address (in $24) to a virtual one
-     lhu    $1, (inputBufferEnd - 0x07)(inputBufferPos) // Load the size of the vertex array to copy into reg $1
+    lhu     $20, (vertexTable)(cmd_w0)      // $20 = *(&vertexTable + (cmd_w0 & 0xFFF = (v0+n)*2)) Load the end address (located in the vertex buffer) of the range to load vertices into
+    jal     segmented_to_physical           // Convert the vertex array's segmented address (in $24=cmd_w1) to a virtual one
+     lhu    $1, (inputBufferEnd - 0x07)(inputBufferPos) // $1 = *(&inputBufferEnd + inputBufferPos - 7) = (w0 & 0x00FF_FF00)>>8 = n << 4 = n * 16 Load the size of the vertex array to copy into reg $1
     sub     $20, $20, $1                    // Calculate the address to DMA the provided vertices into
     jal     dma_read_write                  // DMA read the vertices from DRAM
      addi   $19, $1, -1                     // Set up the DMA length
@@ -1589,7 +1622,7 @@ G_RDPHALF_1_handler:
 
 G_MOVEWORD_handler:
     srl     $2, cmd_w0, 16                              // load the moveword command and word index into $2 (e.g. 0xDB06 for G_MW_SEGMENT)
-    lhu     $1, (movewordTable - (G_MOVEWORD << 8))($2) // subtract the moveword label and offset the word table by the word index (e.g. 0xDB06 becomes 0x0304)
+    lhu     $1, (movewordTable - (G_MOVEWORD << 8))($2) // subtract the moveword label and offset the word table by the word index (e.g. 0xDB06 becomes dmem 0x0304)
 do_moveword:
     add     $1, $1, cmd_w0          // adds the offset in the command word to the address from the table (the upper 4 bytes are effectively ignored)
     j       run_next_DL_command     // process the next command
@@ -1676,8 +1709,8 @@ do_movemem:
      andi   $1, cmd_w0, 0x00FE                           // Move the movemem table index into $1 (bits 1-7 of the first command word)
     lbu     $19, (inputBufferEnd - 0x07)(inputBufferPos) // Move the second byte of the first command word into $19
     lhu     $20, (movememTable)($1)                      // Load the address of the memory location for the given movemem index
-    srl     $2, cmd_w0, 5                                // Left shifts the index by 5 (which is then added to the value read from the movemem table)
-    lhu     $ra, (movememHandlerTable - (G_POPMTX | 0xFF00))($12)  // Loads the return address from movememHandlerTable based on command byte
+    srl     $2, cmd_w0, 5                                // Get offset: Right shifts w0 by 5, then added to the value read from the movemem table. Note the result used to set SP_MEM_ADDR has MEM_BANK=0 from the command, and data in higher bits (like the command and transfer length) is ignored
+    lhu     $ra, (movememHandlerTable - (G_POPMTX | 0xFF00))($12)  // Loads the return address from movememHandlerTable based on the (sign-extended) command byte
     j       dma_read_write
 G_SETOTHERMODE_H_handler:
      add    $20, $20, $2
@@ -1715,60 +1748,63 @@ f3dzex_ov2_000012E4:
     j       load_overlay_and_enter      // load overlay 3
      li     $12, f3dzex_ov3_000012E8    // set up the return address in ovl3
 
+ULBO equ (MAX_LIGHTS * LIGHT_SIZE) // unknown lightBuffer offset, canceled out in actual accesses. May as well be 0
+
 f3dzex_ov2_000012F4:
     bnez    $11, f3dzex_000017BC // Skip calculating lights if they're not out of date
-     addi   $6, $6, lightColors - 0x10 - (MAX_LIGHTS * 0x18)
+     addi   $6, $6, lightBuffer - ULBO + 8 + (1 * LIGHT_SIZE) // pointer of last light structure to process as directional (stop after this one is processed) (note $6=numLights is an offset in bytes which is LIGHT_SIZE for NUMLIGHTS_1, 2*LIGHT_SIZE for NUMLIGHTS_2 ...) (note this includes the first two entries of lightBuffer, always)
     sb      cmd_w0, lightsValid
-    // mv[x][y] is row x, column y
+    // Note: mvMatrix is expected to be the model matrix only, not the model-view matrix (see Programming Manual 11.7.3.1)
+    // Notation used: mv[x][y] is row x, column y
     // Matrix integer portion vector registers
-    col0int equ $v8     // used to hold rows 0-1 temporarily
-    col1int equ $v9
-    col2int equ $v10
+    row0int equ $v8     // also used to hold columns 0-1 temporarily
+    row1int equ $v9
+    row2int equ $v10
     // Matrix fractional portion vector registers
-    col0fra equ $v12    // used to hold rows 0-1 temporarily
-    col1fra equ $v13
-    col2fra equ $v14
+    row0fra equ $v12    // also used to hold columns 0-1 temporarily
+    row1fra equ $v13
+    row2fra equ $v14
     // Set up the column registers
-    lqv     col0fra,    (mvMatrix + 0x20)($zero)        // load rows 0-1 of mv (fractional)
-    lqv     col0int,    (mvMatrix + 0x00)($zero)        // load rows 0-1 of mv (integer)
-    lsv     col1fra[2], (mvMatrix + 0x2A)($zero)        // load mv[1][1] into col1 element 1 (fractional)
-    lsv     col1int[2], (mvMatrix + 0x0A)($zero)        // load mv[1][1] into col1 element 1 (integer)
-    vmov    col1fra[0], col0fra[1]                      // load mv[0][1] into col1 element 0 (fractional)
-    lsv     col2fra[4], (mvMatrix + 0x34)($zero)        // load mv[2][2] into col2 element 2 (fractional)
-    vmov    col1int[0], col0int[1]                      // load mv[0][1] into col1 element 0 (integer)
-    lsv     col2int[4], (mvMatrix + 0x14)($zero)        // load mv[2][2] into col2 element 2 (integer)
-    vmov    col2fra[0], col0fra[2]                      // load mv[0][2] into col2 element 0 (fractional)
-    li      $20, lightBuffer - (MAX_LIGHTS * 0x18) + 8  // set up pointer to light direction
-    vmov    col2int[0], col0int[2]                      // load mv[0][2] into col2 element 0 (integer)
-    lpv     $v7[0], (MAX_LIGHTS * 0x18)($20)            // load light direction
-    vmov    col2fra[1], col0fra[6]                      // load mv[1][2] into col2 element 1 (fractional)
-    lsv     col1fra[4], (mvMatrix + 0x32)($zero)        // load mv[2][1] into col1 element 2 (fractional)
-    vmov    col2int[1], col0int[6]                      // load mv[1][2] into col2 element 1 (integer)
-    lsv     col1int[4], (mvMatrix + 0x12)($zero)        // load mv[2][1] into col1 element 2 (integer)
-    vmov    col0fra[1], col0fra[4]                      // load mv[1][0] into col0 element 1 (fractional)
-    lsv     col0fra[4], (mvMatrix + 0x30)($zero)        // load mv[2][0] into col0 element 2 (fractional)
-    vmov    col0int[1], col0int[4]                      // load mv[1][0] into col0 element 1 (integer)
-    lsv     col0int[4], (mvMatrix + 0x10)($zero)        // load mv[2][0] into col0 element 2 (integer)
+    lqv     row0fra,    (mvMatrix + M_f)($zero)   // load columns 0-1 of mv (fractional)
+    lqv     row0int,    (mvMatrix + M_i)($zero)   // load columns 0-1 of mv (integer)
+    lsv     row1fra[2], (mvMatrix + M_YYf)($zero) // load mv[1][1] into row1 element 1 (fractional)
+    lsv     row1int[2], (mvMatrix + M_YYi)($zero) // load mv[1][1] into row1 element 1 (integer)
+    vmov    row1fra[0], row0fra[1]                // load mv[1][0] into row1 element 0 (fractional)
+    lsv     row2fra[4], (mvMatrix + M_ZZf)($zero) // load mv[2][2] into row2 element 2 (fractional)
+    vmov    row1int[0], row0int[1]                // load mv[1][0] into row1 element 0 (integer)
+    lsv     row2int[4], (mvMatrix + M_ZZi)($zero) // load mv[2][2] into row2 element 2 (integer)
+    vmov    row2fra[0], row0fra[2]                // load mv[2][0] into row2 element 0 (fractional)
+    li      $20, lightBuffer - ULBO + 8           // set up pointer to light structure (offset by the light direction offset)
+    vmov    row2int[0], row0int[2]                // load mv[2][0] into row2 element 0 (integer)
+    lpv     $v7[0], (ULBO + 0)($20)               // load light direction
+    vmov    row2fra[1], row0fra[6]                // load mv[2][1] into row2 element 1 (fractional)
+    lsv     row1fra[4], (mvMatrix + M_YZf)($zero) // load mv[1][2] into row1 element 2 (fractional)
+    vmov    row2int[1], row0int[6]                // load mv[2][1] into row2 element 1 (integer)
+    lsv     row1int[4], (mvMatrix + M_YZi)($zero) // load mv[1][2] into row1 element 2 (integer)
+    vmov    row0fra[1], row0fra[4]                // load mv[0][1] into row0 element 1 (fractional)
+    lsv     row0fra[4], (mvMatrix + M_XZf)($zero) // load mv[0][2] into row0 element 2 (fractional)
+    vmov    row0int[1], row0int[4]                // load mv[0][1] into row0 element 1 (integer)
+    lsv     row0int[4], (mvMatrix + M_XZi)($zero) // load mv[0][2] into row0 element 2 (integer)
 @@loop:
-    vmudn   $v29, col1fra, $v7[1]           // light y direction (fractional)
-    vmadh   $v29, col1int, $v7[1]           // light y direction (integer)
-    vmadn   $v29, col0fra, $v7[0]           // light x direction (fractional)
-    spv     $v15[0], (MAX_LIGHTS * 0x18 + 8)($20)
-    vmadh   $v29, col0int, $v7[0]           // light x direction (integer)
-    lw      $12, (MAX_LIGHTS * 0x18 + 8)($20)
-    vmadn   $v29, col2fra, $v7[2]           // light z direction (fractional)
-    vmadh   $v29, col2int, $v7[2]           // light z direction (integer)
+    vmudn   $v29, row1fra, $v7[1]       // acc = row1fra .* v7
+    vmadh   $v29, row1int, $v7[1]       // acc += row1int .* v7 << 16
+    vmadn   $v29, row0fra, $v7[0]       // acc += row0fra .* v7
+    spv     $v15[0], (ULBO + 8)($20)    // (probably writes garbage on first iteration, but the second iteration (after skip_incr is taken!) seems to overwrite it with a "good" value)
+    vmadh   $v29, row0int, $v7[0]       // acc += row0int .* v7 << 16
+    lw      $12, (ULBO + 8)($20)
+    vmadn   $v29, row2fra, $v7[2]       // acc += row0int .* v7<0,0,2>
+    vmadh   $v29, row2int, $v7[2]       // acc += row0int .* v7<0,0,2> << 16
     // Square the low 32 bits of each accumulator element
     vreadacc $v11, ACC_MIDDLE           // read the middle (bits 16..31) of the accumulator elements into v11
-    sw      $12, (MAX_LIGHTS * 0x18 + 0xC)($20)
+    sw      $12, (ULBO + 0xC)($20)
     vreadacc $v15, ACC_LOWER            // read the low (bits 0..15) of the accumulator elements into v15
     beq     $20, $6, f3dzex_000017BC    // exit if equal
      vmudl  $v29, $v11, $v11            // calculate the low partial product of the accumulator squared (low * low)
     vmadm   $v29, $v15, $v11            // calculate the mid partial product of the accumulator squared (mid * low)
     vmadn   $v16, $v11, $v15            // calculate the mid partial product of the accumulator squared (low * mid)
-    beqz    $11, @@skip_incr    // skip increment if $11 is 0
+    beqz    $11, @@skip_incr            // skip increment if $11 is 0 (if first loop iteration)
      vmadh  $v17, $v15, $v15            // calculate the high partial product of the accumulator squared (mid * mid)
-    addi    $20, $20, 0x18      // increment light pointer?
+    addi    $20, $20, LIGHT_SIZE        // increment light pointer
 @@skip_incr:
     vaddc   $v18, $v16, $v16[1]
     li      $11, 1
@@ -1776,7 +1812,7 @@ f3dzex_ov2_000012F4:
     vaddc   $v16, $v18, $v16[2]
     vadd    $v17, $v29, $v17[2]
     vrsqh   $v29[0], $v17[0]
-    lpv     $v7[0], (MAX_LIGHTS * 0x18 + 0x18)($20)
+    lpv     $v7[0], (ULBO + LIGHT_SIZE + 0)($20) // load light direction for next loop
     vrsql   $v16[0], $v16[0]
     vrsqh   $v17[0], $v0[0]
     vmudl   $v29, $v11, $v16[0]
