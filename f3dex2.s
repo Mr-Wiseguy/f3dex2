@@ -31,9 +31,9 @@
     vxor dst, dst, dst
 .endmacro
 
-ACC_LOWER equ 0
+ACC_HI equ 0
 ACC_MIDDLE equ 1
-ACC_UPPER equ 2
+ACC_LO equ 2
 .macro vreadacc, dst, N
     vsar dst, dst, dst[N]
 .endmacro
@@ -262,8 +262,14 @@ MAX_LIGHTS equ 7
 //   /* 0x0C */ /* 4 more bytes of padding from the dword structure alignment */
 // } Light_t; // size = 0x10
 //
-// Rest of the struct on the rsp:
-// WIP
+// Light struct on the RSP in dmem (in lightBuffer):
+// struct {
+//   /* 0x00 */ Light_t light;
+//   /* 0x10 */ signed char dir_model[3]; /* direction of light (normalized), in the model space */
+//   /* 0x13 */ char pad_13;
+//   /* 0x14 */ signed char dir_model_copy[3]; /* copy of dir_model */
+//   /* 0x17 */ char pad_17;
+// }; // size = LIGHT_SIZE = 0x18
 //
 
 // 0x02E0-0x02F0: Overlay 0/1 Table
@@ -920,7 +926,7 @@ G_VTX_handler:
     andi    $6, $5, G_LIGHTING_H
     bnez    $6, Overlay23LoadAddress    // This will always end up in overlay 2, as the start of overlay 3 loads and enters overlay 2
      andi   $7, $5, G_FOG_H
-f3dzex_000017BC:
+lights_ready_000017BC:
     bnez    $8, g_vtx_load_mvp          // Skip recalculating the mvp matrix if it's already up-to-date
      sll    $7, $7, 3                   // $7 is 8 if G_FOG is set, 0 otherwise
     sb      cmd_w0, mvpValid
@@ -1197,7 +1203,7 @@ f3dzex_00001A7C:
     llv     $v13[12], 0x0020($3)
     vmadh   $v16, $v8, $v11[0]
     sll     $11, $6, 10             // Moves the value of G_SHADING_SMOOTH into the sign bit
-    vreadacc $v17, ACC_LOWER
+    vreadacc $v17, ACC_HI
     bgez    $11, no_smooth_shading  // Branch if G_SHADING_SMOOTH isn't set
      vreadacc $v16, ACC_MIDDLE
     lpv     $v18[0], 0x0010($1) // Load vert color of vertex 1
@@ -1362,7 +1368,7 @@ f3dzex_00001D2C:
     ssv     $v15[0], 0x000C(rdpCmdBufPtr)    // Store DxLDy edge coefficient (integer part)
     vreadacc $v2, ACC_MIDDLE
     ssv     $v20[0], 0x000E(rdpCmdBufPtr)    // Store DxLDy edge coefficient (fractional part)
-    vreadacc $v3, ACC_LOWER
+    vreadacc $v3, ACC_HI
     ssv     $v15[6], 0x0014(rdpCmdBufPtr)    // Store DxHDy edge coefficient (integer part)
     vmudn   $v29, $v13, $v8[0]
     ssv     $v20[6], 0x0016(rdpCmdBufPtr)    // Store DxHDy edge coefficient (fractional part)
@@ -1374,7 +1380,7 @@ f3dzex_00001D2C:
     sll     $11, $3, 4              // Shift (geometry mode & G_SHADE) by 4 to get 0x40 if G_SHADE is set
     vreadacc $v6, ACC_MIDDLE
     add     $1, $2, $11             // Increment the triangle pointer by 0x40 bytes (shade coefficients) if G_SHADE is set
-    vreadacc $v7, ACC_LOWER
+    vreadacc $v7, ACC_HI
     sll     $11, $9, 5              // Shift texture enabled (which is 2 when on) by 5 to get 0x40 if textures are on
     vmudl   $v29, $v2, $v23[1]
     add     rdpCmdBufPtr, $1, $11            // Increment the triangle pointer by 0x40 bytes (texture coefficients) if textures are on
@@ -1739,7 +1745,7 @@ Overlay1End:
 
 Overlay2Address:
     lbu     $11, lightsValid
-    j       f3dzex_ov2_000012F4
+    j       lights_ensure_ready_000012F4
      lbu    $6, numLights
 
 f3dzex_ov2_000012E4:
@@ -1750,8 +1756,8 @@ f3dzex_ov2_000012E4:
 
 ULBO equ (MAX_LIGHTS * LIGHT_SIZE) // unknown lightBuffer offset, canceled out in actual accesses. May as well be 0
 
-f3dzex_ov2_000012F4:
-    bnez    $11, f3dzex_000017BC // Skip calculating lights if they're not out of date
+lights_ensure_ready_000012F4:
+    bnez    $11, lights_ready_000017BC // Skip calculating lights if they're not out of date
      addi   $6, $6, lightBuffer - ULBO + 8 + (1 * LIGHT_SIZE) // pointer of last light structure to process as directional (stop after this one is processed) (note $6=numLights is an offset in bytes which is LIGHT_SIZE for NUMLIGHTS_1, 2*LIGHT_SIZE for NUMLIGHTS_2 ...) (note this includes the first two entries of lightBuffer, always)
     sb      cmd_w0, lightsValid
     // Note: mvMatrix is expected to be the model matrix only, not the model-view matrix (see Programming Manual 11.7.3.1)
@@ -1786,47 +1792,64 @@ f3dzex_ov2_000012F4:
     vmov    row0int[1], row0int[4]                // load mv[0][1] into row0 element 1 (integer)
     lsv     row0int[4], (mvMatrix + M_XZi)($zero) // load mv[0][2] into row0 element 2 (integer)
 @@loop:
-    vmudn   $v29, row1fra, $v7[1]       // acc = row1fra .* v7
-    vmadh   $v29, row1int, $v7[1]       // acc += row1int .* v7 << 16
-    vmadn   $v29, row0fra, $v7[0]       // acc += row0fra .* v7
-    spv     $v15[0], (ULBO + 8)($20)    // (probably writes garbage on first iteration, but the second iteration (after skip_incr is taken!) seems to overwrite it with a "good" value)
-    vmadh   $v29, row0int, $v7[0]       // acc += row0int .* v7 << 16
+    // Transform the light direction from world coordinates to model coordinates by multiplying with the inverse of the model matrix
+    // worldCo = modelMatrix * modelCo
+    // modelCo = modelMatrix^-1 * worldCo
+    //         = modelMatrix^T * worldCo (assuming the model matrix is orthogonal, such as a rotation matrix)
+    // acc = modelMatrix^T * (v7<0> ; v7<1> ; v7<2>)
+    vmudn   $v29, row1fra, $v7[1]       // acc = row1fra * v7<1>
+    vmadh   $v29, row1int, $v7[1]       // acc += row1int * v7<1> << 16
+    vmadn   $v29, row0fra, $v7[0]       // acc += row0fra * v7<0>
+    spv     $v15[0], (ULBO + 8)($20)    // Write v15(15..8) as the light direction in model space (writes garbage on first loop iteration, actual value written on the second iteration, after skip_incr is taken)
+    vmadh   $v29, row0int, $v7[0]       // acc += row0int * v7<0> << 16
     lw      $12, (ULBO + 8)($20)
-    vmadn   $v29, row2fra, $v7[2]       // acc += row0int .* v7<0,0,2>
-    vmadh   $v29, row2int, $v7[2]       // acc += row0int .* v7<0,0,2> << 16
-    // Square the low 32 bits of each accumulator element
-    vreadacc $v11, ACC_MIDDLE           // read the middle (bits 16..31) of the accumulator elements into v11
-    sw      $12, (ULBO + 0xC)($20)
-    vreadacc $v15, ACC_LOWER            // read the low (bits 0..15) of the accumulator elements into v15
-    beq     $20, $6, f3dzex_000017BC    // exit if equal
-     vmudl  $v29, $v11, $v11            // calculate the low partial product of the accumulator squared (low * low)
-    vmadm   $v29, $v15, $v11            // calculate the mid partial product of the accumulator squared (mid * low)
-    vmadn   $v16, $v11, $v15            // calculate the mid partial product of the accumulator squared (low * mid)
+    vmadn   $v29, row2fra, $v7[2]       // acc += row2fra * v7<2>
+    vmadh   $v29, row2int, $v7[2]       // acc += row2int * v7<2> << 16
+    // Notation:
+    //   (hi lo) is a 32.0 number (ignoring sign if any)
+    //   (hi . lo) is a 16.16 number (ignoring sign if any)
+    // (v15 v11) = acc(47..16)
+    vreadacc $v11, ACC_MIDDLE           // v11 = acc(31..16)
+    sw      $12, (ULBO + 0xC)($20)      // Copy light direction in model space to the word after too
+    vreadacc $v15, ACC_HI               // v15 = acc(47..32)
+    beq     $20, $6, lights_ready_000017BC    // exit if equal
+    // (v17 . v16) = (v15 . v11) * (v15 . v11)
+     vmudl  $v29, $v11, $v11            // acc = v11 .* v11 >> 16
+    vmadm   $v29, $v15, $v11            // acc += v15 .* v11
+    vmadn   $v16, $v11, $v15            // acc += v11 .* v15 ; v16 = clamp(acc(15..0)) (unclear if clamp is signed or not)
     beqz    $11, @@skip_incr            // skip increment if $11 is 0 (if first loop iteration)
-     vmadh  $v17, $v15, $v15            // calculate the high partial product of the accumulator squared (mid * mid)
+     vmadh  $v17, $v15, $v15            // acc += v15 .* v15 << 16 ; v17 = clamp(acc(31..16)) (signed)
     addi    $20, $20, LIGHT_SIZE        // increment light pointer
 @@skip_incr:
-    vaddc   $v18, $v16, $v16[1]
-    li      $11, 1
-    vadd    $v29, $v17, $v17[1]
-    vaddc   $v16, $v18, $v16[2]
-    vadd    $v17, $v29, $v17[2]
-    vrsqh   $v29[0], $v17[0]
+    // (v17<0> v16<0>) = (v17<0> v16<0>) + (v17<1> v16<1>) + (v17<2> v16<2>)
+    //   (v29 v18) = (v17 v16) + (v17<1> v16<1>)
+    vaddc   $v18, $v16, $v16[1]         // v18 = v16 + v16<1> (sets carry)
+    li      $11, 1                      // set "not first iteration"
+    vadd    $v29, $v17, $v17[1]         // v29 = v17 + v17<1> + carry
+    //   (v17 v16) = (v29 v18) + (v17<2> v16<2>)
+    vaddc   $v16, $v18, $v16[2]         // v16 = v18 + v16<2> (sets carry)
+    vadd    $v17, $v29, $v17[2]         // v17 = v29 + v17<2> + carry
+    // (v17[0] v16[0]) = 1/sqrt (v17[0] v16[0]) (unclear what the radix point of the input/output is)
+    vrsqh   $v29[0], $v17[0]            // set v17[0] as hi of 1/sqrt operation
     lpv     $v7[0], (ULBO + LIGHT_SIZE + 0)($20) // load light direction for next loop
-    vrsql   $v16[0], $v16[0]
-    vrsqh   $v17[0], $v0[0]
-    vmudl   $v29, $v11, $v16[0]
-    vmadm   $v29, $v15, $v16[0]
-    vmadn   $v11, $v11, $v17[0]
-    vmadh   $v15, $v15, $v17[0]
+    vrsql   $v16[0], $v16[0]            // v16[0] = lo(1/sqrt(v17[0], v16[0]))
+    vrsqh   $v17[0], $v0[0]             // v17[0] = hi(1/sqrt(v17[0], v16[0]))
+    // (v15 . v11) = (v15 . v11) * (v17<0> . v16<0>)
+    // (v15 . v11) *= (v17<0> . v16<0>)
+    vmudl   $v29, $v11, $v16[0]         // acc = v11 * v16<0> >> 16
+    vmadm   $v29, $v15, $v16[0]         // acc += v15 * v16<0>
+    vmadn   $v11, $v11, $v17[0]         // acc += v11 * v17<0> ; v11 = clamp(acc(15..0)) (unclear if clamp is signed or not)
+    vmadh   $v15, $v15, $v17[0]         // acc += v15 * v17<0> << 16 ; v15 = clamp(acc(31..16)) (signed)
+// i7 may be the i1 from above?
 .if (UCODE_IS_206_OR_OLDER)
     i7 equ 7
 .else
     i7 equ 3
 .endif
-    vmudn   $v11, $v11, $v30[i7]
+    // (v15 . v11) *= v30[i7]
+    vmudn   $v11, $v11, $v30[i7]        // acc = v11 * v30<i7> ; v11 = clamp(acc(15..0)) (unclear if clamp is signed or not)
     j       @@loop
-     vmadh  $v15, $v15, $v30[i7]
+     vmadh  $v15, $v15, $v30[i7]        // acc += v15 * v30<i7> << 16 ; v15 = clamp(acc(31..16)) (signed)
 
 light_vtx:
     vadd    $v6, $v0, $v7[1h]
@@ -1967,7 +1990,7 @@ f3dzex_ovl2_0000155C:
     vsub    $v20, $v29, $v2       // v20 = v29 - v2
     vmrg    $v29, $v20, $v0[0]    // v29 = v20 or zero based on vcc
     vmudh   $v2, $v29, $v29       // v2 = v29 * v29
-    vreadacc $v2, ACC_LOWER       // v2 = accumulator lower
+    vreadacc $v2, ACC_HI       // v2 = accumulator lower
     vreadacc $v29, ACC_MIDDLE     // v2 = accumulator middle
     vaddc   $v29, $v29, $v29[0q]
     vadd    $v2, $v2, $v2[0q]
