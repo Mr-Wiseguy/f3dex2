@@ -792,7 +792,7 @@ f3dzex_0000134C:
     li      $1, 0x0002
     sh      $15, (lbl_03D0)($21)
     j       f3dzex_000019F4
-     li   $ra, f3dzex_00001870 + 0x8000 // Why?
+     li   $ra, Lights_Done + 0x8000 // Why?
 
 f3dzex_00001478:
 .if (UCODE_IS_F3DEX2_204H)
@@ -923,7 +923,7 @@ f3dzex_0000182C:
      vmadh  $v24, $v10, $v20[2h]
     vge     $v27, $v25, $v31[3]
     llv     $v22[4], 0x0018(inputVtxPos)    // load the texture coords of the 2nd vertex into v22[4-7]
-f3dzex_00001870:
+Lights_Done:
 .L00001498:
 func_000015E0:
 .if !(UCODE_IS_F3DEX2_204H) // Not in F3DEX2 2.04H
@@ -1813,12 +1813,12 @@ f3dzex_ovl2_0000144C:
      li     $12, -0x7F80
     andi    $11, $5, G_TEXTURE_GEN_H
     vmrg    $v3, $v0, $v31[5]
-    beqz    $11, f3dzex_00001870
+    beqz    $11, Lights_Done
      vge    $v27, $v25, $v31[3]
     lpv     $v2[0], 0x00B0($9)
     lpv     $v20[0], 0x0098($9)
 f3dzex_ovl2_00001478:
-    j       f3dzex_ovl2_00001708
+    j       Lights_TexgenMain
      vmulf  $v21, $v7, $v2[0h]
 
 f3dzex_ovl2_00001480: // $12 is either 0 or -0x7F80
@@ -1974,175 +1974,106 @@ f3dzex_ovl2_0000168C:
     luv     $v29[0], 0x00B8($9)
 .endif
 
-.if celshading == 0
-
-f3dzex_ovl2_00001690:
-    vmulu   $v21, $v7, $v2[0h]
-    luv     $v4[0], 0x00A0($9)
-    vmacu   $v21, $v6, $v2[1h]
-    beq     $9, curClipRatio, f3dzex_ovl2_00001758
-     vmacu  $v21, $v5, $v2[2h]
-    vmulu   $v28, $v7, $v20[0h]
-    luv     $v3[0], 0x0088($9)
-    vmacu   $v28, $v6, $v20[1h]
+// Loop for dot product normals and multiply-add color
+Lights_DotAccumColorLoop:
+    vmulu   $v21, $v7, $v2[0h]      // normal 2n+1 X * vtx all
+    luv     $v4[0], 0x88+0x18($9)   // color light 2n+1
+    vmacu   $v21, $v6, $v2[1h]      // normal 2n+1 Y * vtx Y only
+    beq     $9, curClipRatio, Lights_FinishOne // Finish pipeline for odd number of lights
+     vmacu  $v21, $v5, $v2[2h]      // normal 2n+1 Z * vtx Z only
+    vmulu   $v28, $v7, $v20[0h]     // normal 2n X * vtx all
+    luv     $v3[0], 0x0088($9)      // color light 2n
+    vmacu   $v28, $v6, $v20[1h]     // normal 2n Y * vtx Y only
     addi    $11, $9, -0x18
-    vmacu   $v28, $v5, $v20[2h]
+    vmacu   $v28, $v5, $v20[2h]     // normal 2n Z * vtx Z only
     addi    $9, $9, -0x0030
-    vmrg    $v29, $v29, $v27
-    mtc2    $zero, $v4[6]
-    vmrg    $v3, $v3, $v0[0]
-    mtc2    $zero, $v4[14]
+.if celshading == 0 // In cel shading, alpha merged at the end 
+    vmrg    $v29, $v29, $v27        // select orig alpha
+    mtc2    $zero, $v4[6]           // alpha = 0, vtx 0, 2n+1
+    vmrg    $v3, $v3, $v0[0]        // alphas = 0, 2n
+    mtc2    $zero, $v4[14]          // alpha = 0, vtx 1, 2n+1
+.endif
     vand    $v21, $v21, $v31[7]
-    lpv     $v2[0], 0x00B0($9)
+    lpv     $v2[0], 0x98+0x18($9)   // normal light 2n+1, (2) tgt B
     vand    $v28, $v28, $v31[7]
-    lpv     $v20[0], 0x0098($9)
+    lpv     $v20[0], 0x0098($9)     // normal light 2n, (2) tgt A, (1) tgt B
     vmulf   $v29, $v29, $v31[7]
-    vmacf   $v29, $v4, $v21[0h]
-    bne     $11, curClipRatio, f3dzex_ovl2_00001690
-     vmacf  $v29, $v3, $v28[0h]
-    vmrg    $v3, $v0, $v31[5]
-    llv     $v22[4], 0x0018(inputVtxPos)
-f3dzex_ovl2_000016F4:
-    vge     $v27, $v25, $v31[3] // v31[3] is 32512
+    vmacf   $v29, $v4, $v21[0h]     // multiply add color 2n+1
+    bne     $11, curClipRatio, Lights_DotAccumColorLoop
+     vmacf  $v29, $v3, $v28[0h]     // multiply add color 2n
+// End of loop for even number of lights
+.if celshading == 0
+    vmrg    $v3, $v0, $v31[5]       // pattern in color/alpha depending on VCC
+    llv     $v22[4], 0x0018(inputVtxPos) // unknown 2
+.else
+    vmrg     $v29, $v29, $v27       // Select original alpha
+.endif
+    
+Lights_Effects:
+// Cel Shading
+.if celshading == 1
+    lw      $11, geometryModeLabel
+    andi    $12, $11, G_LIGHTTOALPHA // Is light to shade alpha (cel shading) enabled?
+    vmrg    $v3, $v0, $v31[5]       // pattern in color/alpha depending on VCC
+    beqz    $12, Lights_TexgenPre
+     llv     $v22[4], 0x18(inputVtxPos) // unknown 2
+    vadd    $v29, $v0, $v29[1h]     // Move green to all channels, including alpha
+.endif
+Lights_TexgenPre:
+// Texgen beginning
+    vge     $v27, $v25, $v31[3]     // v31[3] is 0x7F00; some new setup of v27 or VCC
     andi    $11, $5, G_TEXTURE_GEN_H
-    vmulf   $v21, $v7, $v2[0h]
-    beqz    $11, f3dzex_00001870
-     suv    $v29[0], 0x0008(inputVtxPos)
-f3dzex_ovl2_00001708:
-    vmacf   $v21, $v6, $v2[1h]
+    vmulf   $v21, $v7, $v2[0h]      // tgt B X * vtx all
+    beqz    $11, Lights_Done
+     suv    $v29[0], 0x0008(inputVtxPos) // write back color/alpha
+Lights_TexgenMain:
+// Texgen main
+    vmacf   $v21, $v6, $v2[1h]      // tgt B Y * vtx Y
     andi    $12, $5, G_TEXTURE_GEN_LINEAR_H
-    vmacf   $v21, $v5, $v2[2h]
-    vxor    $v4, $v3, $v31[5]   // v31[5] is 0x4000
-    vmulf   $v28, $v7, $v20[0h]
+    vmacf   $v21, $v5, $v2[2h]      // tgt B Z * vtx Z
+    vxor    $v4, $v3, $v31[5]       // v31[5] is 0x4000; pattern in color, 0 in alpha
+    vmulf   $v28, $v7, $v20[0h]     // tgt A XYZ * vtx XYZ
     vmacf   $v28, $v6, $v20[1h]
     vmacf   $v28, $v5, $v20[2h]
     lqv     $v2[0], (linearGenerateCoefficients)($zero)
-    vmudh   $v22, $v1, $v31[5]  // v31[5] is 16384
+    vmudh   $v22, $v1, $v31[5]      // v31[5] is 16384
     vmacf   $v22, $v3, $v21[0h]
-    beqz    $12, f3dzex_00001870
+    beqz    $12, Lights_Done
      vmacf  $v22, $v4, $v28[0h]
-    vmadh   $v22, $v1, $v2[0]   // v2[0] is -0.5
+// Texgen Linear
+    vmadh   $v22, $v1, $v2[0]       // v2[0] is -0.5
     vmulf   $v4, $v22, $v22
-    vmulf   $v3, $v22, $v31[7]  // v31[7] is 0.999969482421875
-    vmacf   $v3, $v22, $v2[2]   // v2[2] is 0.849212646484375
+    vmulf   $v3, $v22, $v31[7]      // v31[7] is 0.999969482421875
+    vmacf   $v3, $v22, $v2[2]       // v2[2] is 0.849212646484375
 .if (UCODE_IS_F3DEX2_204H)
-    vec3 equ v22
+    vmudh   $v22, $v1, $v31[5]
 .else
-    vec3 equ v21
+    vmudh   $v21, $v1, $v31[5]
 .endif
-    vmudh   $vec3, $v1, $v31[5]
     vmacf   $v22, $v22, $v2[1]
-    j       f3dzex_00001870
+    j       Lights_Done
      vmacf  $v22, $v4, $v3
 
-f3dzex_ovl2_00001758:
-    vmrg    $v29, $v29, $v27
+Lights_FinishOne:
+.if celshading == 0
+    vmrg    $v29, $v29, $v27        // select orig alpha
     vmrg    $v4, $v4, $v0[0]
-    vand    $v21, $v21, $v31[7]
-    veq     $v3, $v31, $v31[3h]
-    lpv     $v2[0], 0x0080($9)
-    vmrg    $v3, $v0, $v31[5]
-    llv     $v22[4], 0x0018(inputVtxPos)
-    vmulf   $v29, $v29, $v31[7]
-    j       f3dzex_ovl2_000016F4
-     vmacf  $v29, $v4, $v21[0h]
-
+    vand    $v21, $v21, $v31[7]     // mask dot product
+    veq     $v3, $v31, $v31[3h]     // 00010001
+    lpv     $v2[0], 0x0080($9)      // load other tgt
+    vmrg    $v3, $v0, $v31[5]       // pattern in color/alpha depending on VCC
+    llv     $v22[4], 0x0018(inputVtxPos) // unknown 2
+    vmulf   $v29, $v29, $v31[7]     // scale accum
+    j       Lights_Effects
+     vmacf  $v29, $v4, $v21[0h]     // dot * color
 .else
-
-f3dzex_ovl2_00001690:
-LightLoop_12A0:
-    vmulu    $v21, $v7, $v2[0h]      /*normal 2n+1 X * vtx all*/
-    luv      $v4[0], 0x88+0x18($9)   /*color light 2n+1*/
-    vmacu    $v21, $v6, $v2[1h]      /*normal 2n+1 Y * vtx Y only*/
-    beq      $9, $13, .L00001368     /*probably finish pipeline */
-     vmacu    $v21, $v5, $v2[2h]     /*normal 2n+1 Z * vtx Z only*/
-    vmulu    $v28, $v7, $v20[0h]     /*normal 2n X * vtx all*/
-    luv      $v3[0], 0x88($9)        /*color light 2n*/
-    vmacu    $v28, $v6, $v20[1h]     /*normal 2n Y * vtx Y only*/
-    addi     $11, $9, -0x18
-    vmacu    $v28, $v5, $v20[2h]     /*normal 2n Z * vtx Z only*/
-    addi     $9, $9, -0x30
-/* These instructions were removed from the original to make space; no need to zero the alpha,
-it can be merged at the end. 4 instructions added below, a couple others tweaked I think */
-    /*vmrg    $v29, $v29, $v27*/      /*select orig alpha*/
-    /*mtc2    $zero, $v4[6]*/         /*alpha = 0, vtx 0, 2n+1*/
-    /*vmrg    $v3, $v3, $v0[0]*/      /*alphas = 0, 2n*/
-    /*mtc2    $zero, $v4[14]*/        /*alpha = 0, vtx 1, 2n+1*/
-    vand     $v21, $v21, $v31[7]
-    lpv      $v2[0], 0x98+0x18($9)   /*normal light 2n+1, (2) tgt B*/
-    vand     $v28, $v28, $v31[7]
-    lpv      $v20[0], 0x98($9)       /*normal light 2n, (2) tgt A, (1) tgt B*/
-    vmulf    $v29, $v29, $v31[7]
-    vmacf    $v29, $v4, $v21[0h]     /*multiply add color 2n+1*/
-    bne      $11, $13, LightLoop_12A0
-     vmacf    $v29, $v3, $v28[0h]     /*multiply add color 2n*/
-
-/* Modified from here */
-    vmrg     $v29, $v29, $v27        /*1 of 4 added: select orig alpha*/
-
-f3dzex_ovl2_000016F4:
-AfterSingleLight: /* rel 12F0, abs 1438 */
-    andi    $12, $5, 0x0040         /*2 of 4 added: is cel shading enabled?*/
-    vmrg    $v3, $v0, $v31[5]       /*pattern in color/alpha depending on VCC*/
-    beqz    $12, NoCelShading       /*3 of 4 added*/
-    llv     $v22[4], 0x18($14)
-/* Move green to all channels, including alpha; this is really what we wanted */
-    vadd    $v29, $v0, $v29[1h]     /*4 of 4 added */
-
-/* 010010 1 0101 11101 00000 11101 010000 */
-/* 01001010 10111101 00000111 01010000 */
-
-NoCelShading:
-/* Texgen */
-    vge     $v27, $v25, $v31[3]     /*some new setup of v27 or VCC*/
-    andi    $11, $5, G_TEXTURE_GEN_H
-    vmulf   $v21, $v7, $v2[0h]      /*tgt B X * vtx all*/
-    beqz    $11, .L00001498
-     suv     $v29[0], 0x8($14)       /*write back color/alpha */
-
-f3dzex_ovl2_00001708:
-func_00001318:
-/* Linear texgen*/
-    vmacf   $v21, $v6, $v2[1h]      /*tgt B Y * vtx Y*/
-    andi    $12, $5, G_TEXTURE_GEN_LINEAR_H
-    vmacf   $v21, $v5, $v2[2h]      /*tgt B Z * vtx Z*/
-    vxor    $v4, $v3, $v31[5]       /*pattern in color, 0 in alpha*/
-    vmulf   $v28, $v7, $v20[0h]     /*tgt A XYZ * vtx XYZ*/
-    vmacf   $v28, $v6, $v20[1h]
-    vmacf   $v28, $v5, $v20[2h]
-    lqv     $v2[0], 0x1D0($zero)
-    vmudh   $v22, $v1, $v31[5]
-    vmacf   $v22, $v3, $v21[0h]
-    beqz    $12, .L00001498         /* abs 15E0, diff 148 */
-     vmacf   $v22, $v4, $v28[0h]
-
-func_00001348:
-    vmadh   $v22, $v1, $v2[0]
-    vmulf   $v4, $v22, $v22
-    vmulf   $v3, $v22, $v31[7]
-    vmacf   $v3, $v22, $v2[2]
-    vmudh   $v21, $v1, $v31[5]
-    vmacf   $v22, $v22, $v2[1]
-    j       func_000015E0
-     vmacf   $v22, $v4, $v3
-f3dzex_ovl2_00001758:
-.L00001368:
-/* Lighting codepath if there is only one light (or an odd number), this was
-modified and shortened */
-    vand    $v21, $v21, $v31[7]     /*mask dot product*/
-    vmulf   $v29, $v29, $v31[7]     /*scale accum*/
-    vmacf   $v29, $v4, $v21[0h]     /*dot * color*/
-    lpv     $v2[0], 0x80($9)        /*load other tgt*/
-    vmrg    $v29, $v29, $v27        /*select orig alpha*/
-    j       AfterSingleLight        /* abs 1438 */
-     veq     $v3, $v31, $v31[3h]     /*00010001*/
-    nop
-    nop
-    nop
-    /*vmrg  $v4, $v4, $v0[0]*/      /*zero alpha in color*/
-    /*llv   $v22[4], 0x18($14)*/    /*after no cel shading*/
-    /*vmrg  $v3, $v0, $v31[5]*/     /*mask only in color*/
-
+    vand    $v21, $v21, $v31[7]     // mask dot product
+    vmulf   $v29, $v29, $v31[7]     // scale accum
+    vmacf   $v29, $v4, $v21[0h]     // dot * color
+    lpv     $v2[0], 0x0080($9)      // load other tgt
+    vmrg    $v29, $v29, $v27        // select orig alpha
+    j       Lights_Effects        
+     veq     $v3, $v31, $v31[3h]    // 00010001
 .endif
 
 .align 8
