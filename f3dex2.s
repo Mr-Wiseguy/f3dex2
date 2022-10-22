@@ -55,6 +55,15 @@ overlay_imem equ 0x0006
 // RSP DMEM
 .create DATA_FILE, 0x0000
 
+/*
+Matrices are stored like in OpenGL, where adjacent elements form a column
+vector. In C, this would be matrix[col][row]. For the integer part:
+00 08 10 18  typical  Xscl Rot  Rot  Xpos
+02 0A 12 1A  use:     Rot  Yscl Rot  Ypos
+04 0C 14 1C           Rot  Rot  Zscl Zpos
+06 0E 16 1E           0    0    0    1
+The fractional part comes next and is in the same format.
+*/
 // 0x0000-0x0040: modelview matrix
 mvMatrix:
     .fill 64
@@ -66,6 +75,17 @@ pMatrix:
 // 0x0080-0x00C0: modelviewprojection matrix
 mvpMatrix:
     .fill 64
+    
+// Not global names, but used multiple times with the same meaning.
+// Matrix column X integer/fractional
+mxc0i equ $v8
+mxc1i equ $v9
+mxc2i equ $v10
+mxc3i equ $v11
+mxc0f equ $v12
+mxc1f equ $v13
+mxc2f equ $v14
+mxc3f equ $v15
 
 // 0x00C0-0x00C8: scissor (four 12-bit values)
 scissorUpLeft: // the command byte is included since the command word is copied verbatim
@@ -459,6 +479,8 @@ taskDataPtr equ $26
 inputBufferPos equ $27
 rdpCmdBufPtr equ $23
 rdpCmdBufEnd equ $22
+vZero equ $v0
+vOne equ $v1
 
 // Initialization routines
 // Everything up until displaylist_dma will get overwritten by ovl1
@@ -472,10 +494,10 @@ start:
     lqv     $v30[0], (v30Value)($zero)
     li      rdpCmdBufPtr, rdpCmdBuffer1
 .if !(UCODE_IS_207_OR_OLDER)
-    vadd    $v1, $v0, $v0   // $v0 is all 0s, $v1 also becomes all 0s
+    vadd    vOne, $v0, $v0   // $v0 is all 0s, vOne also becomes all 0s
 .endif
     li      rdpCmdBufEnd, rdpCmdBuffer1End
-    vsub    $v1, $v0, $v31[0]   // Vector of 1s
+    vsub    vOne, $v0, $v31[0]   // Vector of 1s
     lw      $11, rdpFifoPos
     lw      $12, OSTask + OSTask_flags
     li      $1, SP_CLR_SIG2 | SP_CLR_SIG1   // task done and yielded signals
@@ -581,7 +603,7 @@ G_SPECIAL_1_handler:    // Seems to be a manual trigger for mvp recalculation
     li      $21, pMatrix
     li      $20, mvMatrix
     li      $19, mvpMatrix
-    j       mtx_concat
+    j       mtx_multiply
      sb     cmd_w0, mvpValid
 .endif
 
@@ -752,7 +774,7 @@ f3dzex_0000134C:
 .if (UCODE_IS_F3DEX2_204H) // Only in F3DEX2 2.04H
     vrcph   $v29[0], $v11[3]
 .else
-    vor     $v29, $v11, $v1[0]
+    vor     $v29, $v11, vOne[0]
     vrcph   $v3[3], $v11[3]
 .endif
     vrcpl   $v2[3], $v10[3]
@@ -776,7 +798,7 @@ f3dzex_0000134C:
     vmadm   $v29, $v13, $v10
     vmadn   $v10, $v12, $v11
     vmadh   $v11, $v13, $v11
-    vmudh   $v29, $v1, $v31[1]
+    vmudh   $v29, vOne, $v31[1]
     vmadn   $v10, $v10, $v31[4]
     vmadh   $v11, $v11, $v31[4]
     vmudl   $v29, $v12, $v10
@@ -794,11 +816,11 @@ f3dzex_0000134C:
     vmudl   $v29, $v10, $v2[3]
     vmadm   $v11, $v11, $v2[3]
     vmadn   $v10, $v10, $v0[0]
-    vlt     $v11, $v11, $v1[0]
+    vlt     $v11, $v11, vOne[0]
     vmrg    $v10, $v10, $v31[0]
-    vsubc   $v29, $v10, $v1[0]
+    vsubc   $v29, $v10, vOne[0]
     vge     $v11, $v11, $v0[0]
-    vmrg    $v10, $v10, $v1[0]
+    vmrg    $v10, $v10, vOne[0]
     vmudn   $v2, $v10, $v31[0]
     vmudl   $v29, $v6, $v10[3]
     vmadm   $v29, $v7, $v10[3]
@@ -810,7 +832,7 @@ f3dzex_0000134C:
     li      $7, 0x0000
     li      $1, 0x0002
     sh      $15, (lbl_03D0)($21)
-    j       f3dzex_000019F4 // Goes to f3dzex_000019F4, then to vertices_store, then
+    j       LoadspFxGlobalValues // Goes to LoadspFxGlobalValues, then to vertices_store, then
      li   $ra, vertices_store + 0x8000 // comes back here, via bltz $ra, f3dzex_00001478
 
 outputVtxPos equ $15
@@ -874,6 +896,14 @@ Overlay3End:
 Overlay23End_:
 
 inputVtxPos equ $14
+tempCmdBuf50 equ $8
+// See LoadspFxGlobalValues for detailed contents
+vFxScaleFMin equ $v16
+vFxTransFMax equ $v17
+vFxMisc      equ $v18
+vFxMask      equ $v19
+vFxNegScale  equ $v21
+
 G_VTX_handler:
     lhu     $20, (vertexTable)(cmd_w0)      // Load the address of the provided vertex array
     jal     segmented_to_physical           // Convert the vertex array's segmented address (in $24) to a virtual one
@@ -888,93 +918,112 @@ G_VTX_handler:
     move    inputVtxPos, $20
     lbu     $8, mvpValid
     andi    $6, $5, G_LIGHTING_H
-    bnez    $6, Overlay23LoadAddress    // This will always end up in overlay 2, as the start of overlay 3 loads and enters overlay 2
+    bnez    $6, Overlay23LoadAddress  // This will always end up in overlay 2, as the start of overlay 3 loads and enters overlay 2
      andi   $7, $5, G_FOG_H
-After_MVxLightDirs:
-    bnez    $8, g_vtx_load_mvp          // Skip recalculating the mvp matrix if it's already up-to-date
-     sll    $7, $7, 3                   // $7 is 8 if G_FOG is set, 0 otherwise
-    sb      cmd_w0, mvpValid
-    li      $21, pMatrix
+After_LightDirMVTransposeNormalize:
+    bnez    $8, Vertex_SkipRecalcMVP  // Skip recalculating the mvp matrix if it's already up-to-date
+     sll    $7, $7, 3                 // $7 is 8 if G_FOG is set, 0 otherwise
+    sb      cmd_w0, mvpValid          // Set mvpValid
+    li      $21, pMatrix              // Arguments to mtx_multiply
     li      $20, mvMatrix
     // Calculate the MVP matrix
-    jal     mtx_concat
+    jal     mtx_multiply
      li     $19, mvpMatrix
 
-g_vtx_load_mvp:
-    lqv     $v8,  (mvpMatrix +  0)($zero)            // load bytes  0-15 of the mvp matrix into v8
-    lqv     $v10, (mvpMatrix + 16)($zero)            // load bytes 16-31 of the mvp matrix into v10
-    lqv     $v12, (mvpMatrix + 32)($zero)            // load bytes 32-47 of the mvp matrix into v12
-    lqv     $v14, (mvpMatrix + 48)($zero)            // load bytes 48-63 of the mvp matrix into v14
-
-    vcopy   $v9, $v8                                 // copy v8 into v9
-    ldv     $v9, (mvpMatrix +  8)($zero)             // load bytes  8-15 of the mvp matrix into the lower half of v9
-    vcopy   $v11, $v10                               // copy v10 into v11
-    ldv     $v11, (mvpMatrix + 24)($zero)            // load bytes 24-31 of the mvp matrix into the lower half of v11
-    vcopy   $v13, $v12                               // copy v12 into v13
-    ldv     $v13, (mvpMatrix + 40)($zero)            // load bytes 40-47 of the mvp matrix into the lower half of v13
-    vcopy   $v15, $v14                               // copy v14 into v15
-    ldv     $v15, (mvpMatrix + 56)($zero)            // load bytes 56-63 of the mvp matrix into the lower half of v13
-
-    ldv     $v8[8],  (mvpMatrix +  0)($zero)         // load bytes  0- 8 of the mvp matrix into the upper half of v8
-    ldv     $v10[8], (mvpMatrix + 16)($zero)         // load bytes 16-23 of the mvp matrix into the upper half of v10
-    jal     f3dzex_000019F4
-     ldv    $v12[8], (mvpMatrix + 32)($zero)         // load bytes 32-39 of the mvp matrix into the upper half of v12
+Vertex_SkipRecalcMVP:
+    /* Load MVP matrix as follows, drawn like math format (translation = col on right):
+      Integer part   Fractional part
+    E v8  v9 v10 v11 v12 v13 v14 v15     (Example data)
+    0 00  08  10  18  20  28  30  38     Xscl Rot  Rot  Xpos
+    1 02  0A  12  1A  22  2A  32  3A     Rot  Yscl Rot  Ypos
+    2 04  0C  14  1C  24  2C  34  3C     Rot  Rot  Zscl Zpos
+    3 06  0E  16  1E  26  2E  36  3E     0    0    0    1
+    4 00  08  10  18  20  28  30  38
+    5 02  0A  12  1A  22  2A  32  3A
+    6 04  0C  14  1C  24  2C  34  3C
+    7 06  0E  16  1E  26  2E  36  3E
+    Vector regs contain columns of original matrix (v11/v15 have translations)
+    */
+    lqv     mxc0i,    (mvpMatrix +  0)($zero)
+    lqv     mxc2i,    (mvpMatrix + 16)($zero)
+    lqv     mxc0f,    (mvpMatrix + 32)($zero)
+    lqv     mxc2f,    (mvpMatrix + 48)($zero)
+    vcopy   mxc1i, mxc0i
+    ldv     mxc1i,    (mvpMatrix +  8)($zero)
+    vcopy   mxc3i, mxc2i
+    ldv     mxc3i,    (mvpMatrix + 24)($zero)
+    vcopy   mxc1f, mxc0f
+    ldv     mxc1f,    (mvpMatrix + 40)($zero)
+    vcopy   mxc3f, mxc2f
+    ldv     mxc3f,    (mvpMatrix + 56)($zero)
+    ldv     mxc0i[8], (mvpMatrix +  0)($zero)
+    ldv     mxc2i[8], (mvpMatrix + 16)($zero)
+    jal     LoadspFxGlobalValues
+     ldv    mxc0f[8], (mvpMatrix + 32)($zero)
     jal     while_wait_dma_busy
-     ldv    $v14[8], (mvpMatrix + 48)($zero)         // load bytes 48-55 of the mvp matrix into the upper half of v14
+     ldv    mxc2f[8], (mvpMatrix + 48)($zero)
     ldv     $v20[0], (inputVtxSize * 0)(inputVtxPos) // load the position of the 1st vertex into v20's lower 8 bytes
-    vmov    $v16[5], $v21[1]                         // moves v21[1-2] into v16[5-6]
+    vmov    vFxScaleFMin[5], vFxNegScale[1]          // Finish building vFxScaleFMin
     ldv     $v20[8], (inputVtxSize * 1)(inputVtxPos) // load the position of the 2nd vertex into v20's upper 8 bytes
     
 tempLightPtrTop1B equ $6 // Pointer kept one light behind (plus spFxBase shenanigans)
 lightPtrTop1B equ $9     // Pointer kept one light behind (plus spFxBase shenanigans)
+vPairMVPPosI equ $v24
+vPairMVPPosF equ $v23
+vPairST equ $v22
+vPairRGBA equ $v7
 vertices_process_pair:
-    vmudn   $v29, $v15, $v1[0]
+    // Two verts pos in v20; multiply by MVP
+    vmudn   $v29, mxc3f, vOne[0]
     lw      $11, (inputVtxSize + 0xC)(inputVtxPos)  // load the color/normal of the 2nd vertex into $11
-    vmadh   $v29, $v11, $v1[0]
+    vmadh   $v29, mxc3i, vOne[0]
     llv     $v22[12], 8(inputVtxPos)                // load the texture coords of the 1st vertex into v22[12-15]
-    vmadn   $v29, $v12, $v20[0h]
+    vmadn   $v29, mxc0f, $v20[0h]
     move    lightPtrTop1B, tempLightPtrTop1B
-    vmadh   $v29, $v8, $v20[0h]
-    lpv     $v2[0], (0x80 + 0x30)(lightPtrTop1B)
-    vmadn   $v29, $v13, $v20[1h]
+    vmadh   $v29, mxc0i, $v20[0h]
+    lpv     $v2[0], (oneLtOfs + lightSize + 0x10)(lightPtrTop1B) // Load transformed light dir
+    vmadn   $v29, mxc1f, $v20[1h]
     sw      $11, 8(inputVtxPos)                     // Move the first vertex's colors/normals into the word before the second vertex's
-    vmadh   $v29, $v9, $v20[1h]
+    vmadh   $v29, mxc1i, $v20[1h]
     lpv     $v7[0], 8(inputVtxPos)                  // Load both vertex's colors/normals into the first half of v7
-    vmadn   $v23, $v14, $v20[2h]
-    bnez    tempLightPtrTop1B, light_vtx              // Maybe trying to check if there are no lights, but no longer working?
-     vmadh  $v24, $v10, $v20[2h]
+    vmadn   $v23, mxc2f, $v20[2h]                   // v23 = MVP * vpos result frac
+    bnez    tempLightPtrTop1B, light_vtx              // Maybe trying to check if there are no lights, but no longer working? tempLightPtrTop1B will never equal zero.
+     vmadh  $v24, mxc2i, $v20[2h]                   // v24 = MVP * vpos result int
+    // These two instructions are repeated at the end of all the lighting codepaths,
+    // since they're skipped here if lighting is done
     vge     $v27, $v25, $v31[3]                     // v31[3] is 0x7F00; some new setup of v27 or VCC
     llv     $v22[4], (inputVtxSize + 8)(inputVtxPos)  // load the texture coords of the 2nd vertex into v22[4-7]
+
 vertices_store:
 .if !(UCODE_IS_F3DEX2_204H) // Not in F3DEX2 2.04H
     vge     $v3, $v25, $v0[0]
 .endif
     addi    $1, $1, -4
-    vmudl   $v29, $v23, $v18[4]
-    sub     $11, $8, $7
-    vmadm   $v2, $v24, $v18[4]
+    vmudl   $v29, $v23, vFxMisc[4] // Persp norm
+    sub     $11, tempCmdBuf50, $7
+    vmadm   $v2, $v24, vFxMisc[4] // Persp norm
     sbv     $v27[15], -0x0D($11)
     vmadn   $v21, $v0, $v0[0]
     sbv     $v27[7], -0x35($11)
 .if !(UCODE_IS_F3DEX2_204H) // Not in F3DEX2 2.04H
     vmov    $v26[1], $v3[2]
-    ssv     $v3[12], 0x00F4($8)
+    ssv     $v3[12], 0x00F4(tempCmdBuf50)
 .endif
-    vmudn   $v7, $v23, $v18[5]
+    vmudn   $v7, $v23, vFxMisc[5] // 0x0002
 .if (UCODE_IS_F3DEX2_204H)
-    sdv     $v25[8], 0x03F0($8)
+    sdv     $v25[8], 0x03F0(tempCmdBuf50)
 .else
-    slv     $v25[8], 0x01F0($8)
+    slv     $v25[8], 0x01F0(tempCmdBuf50)
 .endif
-    vmadh   $v6, $v24, $v18[5]
-    sdv     $v25[0], 0x03C8($8)
+    vmadh   $v6, $v24, vFxMisc[5] // 0x0002
+    sdv     $v25[0], 0x03C8(tempCmdBuf50)
     vrcph   $v29[0], $v2[3]
-    ssv     $v26[12], 0x0F6($8)
+    ssv     $v26[12], 0x0F6(tempCmdBuf50)
     vrcpl   $v5[3], $v21[3]
 .if (UCODE_IS_F3DEX2_204H)
-    ssv     $v26[4], 0x00CE($8)
+    ssv     $v26[4], 0x00CE(tempCmdBuf50)
 .else
-    slv     $v26[2], 0x01CC($8)
+    slv     $v26[2], 0x01CC(tempCmdBuf50)
 .endif
     vrcph   $v4[3], $v2[7]
     ldv     $v3[0], 0x0008(inputVtxPos)
@@ -996,7 +1045,7 @@ vertices_store:
     sdv     $v23[0], 0x03B8(outputVtxPos)
     vge     $v29, $v24, $v0[0]
     lsv     $v23[14], 0x00E4($8)
-    vmudh   $v29, $v1, $v31[1]
+    vmudh   $v29, vOne, $v31[1]
     sdv     $v24[8], 0x03D8($8)
     vmadn   $v26, $v21, $v31[4]
     lsv     $v23[6], 0x00BC(outputVtxPos)
@@ -1026,22 +1075,22 @@ vertices_store:
     sh      $10, -0x0004($8)
     vmadh   $v25, $v24, $v2[3h]
     sll     $10, $10, 4
-    vmudm   $v3, $v22, $v18
+    vmudm   $v3, $v22, vFxMisc // Using TexSScl and TexTScl in elems 2, 3, 6, 7
     sh      $11, (0x26 - 2 * vtxSize)(outputVtxPos)
     sh      $10, (0x24 - 2 * vtxSize)(outputVtxPos)
-    vmudl   $v29, $v26, $v18[4]
+    vmudl   $v29, $v26, vFxMisc[4] // Persp norm
     ssv     $v5[6], 0x00D2(outputVtxPos)
-    vmadm   $v25, $v25, $v18[4]
+    vmadm   $v25, $v25, vFxMisc[4] // Persp norm
     ssv     $v4[14], 0x00F8($8)
     vmadn   $v26, $v0, $v0[0]
     ssv     $v4[6], 0x00D0(outputVtxPos)
-    slv     $v3[4], 0x01EC($8)
-    vmudh   $v29, $v17, $v1[0]
-    slv     $v3[12], 0x01C4(outputVtxPos)
-    vmadh   $v29, $v19, $v31[3]
-    vmadn   $v26, $v26, $v16
+    slv     $v3[4], 0x01EC($8) // Store scaled S, T
+    vmudh   $v29, vFxTransFMax, vOne[0]
+    slv     $v3[12], 0x01C4(outputVtxPos) // Store scaled S, T
+    vmadh   $v29, vFxMask, $v31[3]
+    vmadn   $v26, $v26, vFxScaleFMin
     bgtz    $1, vertices_process_pair
-     vmadh  $v25, $v25, $v16
+     vmadh  $v25, $v25, vFxScaleFMin
     bltz    $ra, f3dzex_00001478    // has a different version in ovl2
 .if !(UCODE_IS_F3DEX2_204H) // Handled differently by F3DEX2 2.04H
      vge    $v3, $v25, $v0[0]
@@ -1065,25 +1114,34 @@ vertices_store:
     j       run_next_DL_command
      sbv    $v27[7], 0x0043(outputVtxPos)
 
-f3dzex_000019F4: // handle clipping?
+LoadspFxGlobalValues:
+    /*
+    vscale = viewport shorts 0:3, vtrans = viewport shorts 4:7
+    v16 = vFxScaleFMin = [vscale[0], -vscale[1], fogMin, vscale[3], (repeat)]
+                         (element 5 written just before vertices_process_pair)
+    v17 = vFxTransFMax = [vtrans[0], fogMax,     fogMax, vtrans[0], (repeat)]
+    v18 = vFxMisc = [???, ???, TexSScl, TexTScl, perspNorm, 0x0002, TexSScl, TexTScl]
+    v19 = vFxMask = [0x0000, 0x0001, 0x0001, 0x0000, 0x0000, 0x0001, 0x0001, 0x0000]
+    v21 = vFxNegScale = -[vscale[0:3], vscale[0:3]]
+    */
     li      spFxBaseReg, spFxBase
-    ldv     $v16[0], (viewport)($zero)          // $v16 = [vscale[0], vscale[1], vscale[2], vscale[3], 0, 0, 0, 0]
-    ldv     $v16[8], (viewport)($zero)          // $v16 = [vscale[0], vscale[1], vscale[2], vscale[3], vscale[0], vscale[1], vscale[2], vscale[3]]
-    llv     $v29[0], 0x0060(spFxBaseReg)       // spFxBase + 0x60 = fogFactor ?
-    ldv     $v17[0], (viewport + 8)($zero)      // vtrans
-    ldv     $v17[8], (viewport + 8)($zero)      // vtrans
-    vlt     $v19, $v31, $v31[3]                 // VCC = [0, 1, 1, 0, 0, 1, 1, 0]
-    vsub    $v21, $v0, $v16                     // 0 - vscale
-    llv     $v18[4], 0x0068(spFxBaseReg)       // spFxBase + 0x68
-    vmrg    $v16, $v16, $v29[0]
-    llv     $v18[12], 0x0068(spFxBaseReg)      // spFxBase + 0x68
-    vmrg    $v19, $v0, $v1[0]
-    llv     $v18[8], (perspNorm)($zero)
-    vmrg    $v17, $v17, $v29[1]
-    lsv     $v18[10], 0x0006(spFxBaseReg)      // spFxBase + 0x06
-    vmov    $v16[1], $v21[1]
+    ldv     vFxScaleFMin[0], (viewport)($zero)     // vFxScaleFMin = [vscale[0], vscale[1], vscale[2], vscale[3], 0, 0, 0, 0]
+    ldv     vFxScaleFMin[8], (viewport)($zero)     // vFxScaleFMin = [vscale[0], vscale[1], vscale[2], vscale[3], vscale[0], vscale[1], vscale[2], vscale[3]]
+    llv     $v29[0], (fogFactor - spFxBase)(spFxBaseReg) // Load fog settings
+    ldv     vFxTransFMax[0], (viewport + 8)($zero) // vtrans
+    ldv     vFxTransFMax[8], (viewport + 8)($zero) // vtrans
+    vlt     vFxMask, $v31, $v31[3]                 // VCC = [0, 1, 1, 0, 0, 1, 1, 0]
+    vsub    vFxNegScale, $v0, vFxScaleFMin         // 0 - vscale
+    llv     vFxMisc[4], (textureSettings2 - spFxBase)(spFxBaseReg) // Texture ST scale
+    vmrg    vFxScaleFMin, vFxScaleFMin, $v29[0]    // Put fog min in elements 01100110 of vscale
+    llv     vFxMisc[12], (textureSettings2 - spFxBase)(spFxBaseReg) // Texture ST scale
+    vmrg    vFxMask, $v0, vOne[0]                  // Put 0 or 1 in v19 01100110
+    llv     vFxMisc[8], (perspNorm)($zero)         // Perspective normalization long (actually short)
+    vmrg    vFxTransFMax, vFxTransFMax, $v29[1]    // Put fog max in elements 01100110 of vtrans
+    lsv     vFxMisc[10], (G_MWO_CLIP_RNX + 2 - spFxBase)(spFxBaseReg) // Value 0x0002
+    vmov    vFxScaleFMin[1], vFxNegScale[1]        // -vscale[1]
     jr      $ra
-     addi   $8, rdpCmdBufPtr, 0x50
+     addi   tempCmdBuf50, rdpCmdBufPtr, 0x50
 
 G_TRI2_handler:
 G_QUAD_handler:
@@ -1100,7 +1158,7 @@ f3dzex_00001A4C:
     lbu     $3, 0x0007(rdpCmdBufPtr)     // $3 = vertex 3 index
     vor     $v3, $v0, $v31[5]
     lhu     $1, (vertexTable)($1) // convert vertex 1's index to its address
-    vmudn   $v4, $v1, $v31[6]
+    vmudn   $v4, vOne, $v31[6]
     lhu     $2, (vertexTable)($2) // convert vertex 2's index to its address
     vmadl   $v2, $v2, $v30[1]
     lhu     $3, (vertexTable)($3) // convert vertex 3's index to its address
@@ -1264,7 +1322,7 @@ shading_done:
 .endif
     vcr     $v15, $v15, $v30[i4]
     sb      $11, 0x0000(rdpCmdBufPtr) // Store the triangle command id
-    vmudh   $v29, $v1, $v30[i5]
+    vmudh   $v29, vOne, $v30[i5]
     ssv     $v10[2], 0x0002(rdpCmdBufPtr) // Store YL edge coefficient
     vmadn   $v16, $v16, $v30[4]     // v30[4] is 0xFFF0
     ssv     $v2[2], 0x0004(rdpCmdBufPtr) // Store YM edge coefficient
@@ -1370,9 +1428,9 @@ f3dzex_00001D2C:
     sdv     $v6[0], 0x0038($2)      // Store DrDy, DgDy, DbDy, DaDy shade coefficients (fractional)
     vmadh   $v9, $v3, $v15[3]
     sdv     $v7[0], 0x0028($2)      // Store DrDy, DgDy, DbDy, DaDy shade coefficients (integer)
-    vmudn   $v29, $v5, $v1[0]
+    vmudn   $v29, $v5, vOne[0]
     sdv     $v6[8], 0x0038($1)      // Store DsDy, DtDy, DwDy texture coefficeints (fractional)
-    vmadh   $v29, $v18, $v1[0]
+    vmadh   $v29, $v18, vOne[0]
     sdv     $v7[8], 0x0028($1)      // Store DsDy, DtDy, DwDy texture coefficeints (integer)
     vmadl   $v29, $v8, $v4[1]
     sdv     $v8[0], 0x0030($2)      // Store DrDe, DgDe, DbDe, DaDe shade coefficients (fractional)
@@ -1624,7 +1682,7 @@ G_MTX_end: // Multiplies the loaded model matrix into the model stack
 input_mtx_0 equ $21
 input_mtx_1 equ $20
 output_mtx equ $19
-mtx_concat:
+mtx_multiply:
     addi    $12, input_mtx_1, 0x0018
 @@loop:
     vmadn   $v9, $v0, $v0[0]
@@ -1711,7 +1769,7 @@ Overlay1End:
 
 Overlay2Address:
     lbu     $11, lightsValid
-    j       Continue_MVxLightDirs
+    j       Continue_LightDirMVTransposeNormalize
      lbu    tempLightPtrTop1B, numLightsx18
 
 f3dzex_ov2_000012E4:
@@ -1720,55 +1778,61 @@ f3dzex_ov2_000012E4:
     j       load_overlay_and_enter      // load overlay 3
      li     $12, f3dzex_ov3_000012E8    // set up the return address in ovl3
      
-Continue_MVxLightDirs:
-    bnez    $11, After_MVxLightDirs // Skip calculating lights if they're not out of date
+Continue_LightDirMVTransposeNormalize:
+    bnez    $11, After_LightDirMVTransposeNormalize // Skip calculating lights if they're not out of date
      addi   tempLightPtrTop1B, tempLightPtrTop1B, spFxBase - lightSize // Pointer one light behind; maybe because numLightsx18 is always at least 1
     sb      cmd_w0, lightsValid     // Set as valid, reusing state of w0
-    // mv[x][y] is row x, column y
-    // Matrix integer portion vector registers
-    col0int equ $v8     // used to hold rows 0-1 temporarily
-    col1int equ $v9
-    col2int equ $v10
-    // Matrix fractional portion vector registers
-    col0fra equ $v12    // used to hold rows 0-1 temporarily
-    col1fra equ $v13
-    col2fra equ $v14
     lightPtrBot2B equ $20
-    // Set up the column registers
-    lqv     col0fra,    (mvMatrix + 0x20)($zero)        // load rows 0-1 of mv (fractional)
-    lqv     col0int,    (mvMatrix + 0x00)($zero)        // load rows 0-1 of mv (integer)
-    lsv     col1fra[2], (mvMatrix + 0x2A)($zero)        // load mv[1][1] into col1 element 1 (fractional)
-    lsv     col1int[2], (mvMatrix + 0x0A)($zero)        // load mv[1][1] into col1 element 1 (integer)
-    vmov    col1fra[0], col0fra[1]                      // load mv[0][1] into col1 element 0 (fractional)
-    lsv     col2fra[4], (mvMatrix + 0x34)($zero)        // load mv[2][2] into col2 element 2 (fractional)
-    vmov    col1int[0], col0int[1]                      // load mv[0][1] into col1 element 0 (integer)
-    lsv     col2int[4], (mvMatrix + 0x14)($zero)        // load mv[2][2] into col2 element 2 (integer)
-    vmov    col2fra[0], col0fra[2]                      // load mv[0][2] into col2 element 0 (fractional)
+    /* Load MV matrix 3x3 transposed as:
+    mxc0i 00 08 10 06 08 0A 0C 0E
+    mxc1i 02 0A 12
+    mxc2i 04 0C 14
+    mxc3i 
+    mxc0f 20 28 30 26 28 2A 2C 2E
+    mxc1f 22 2A 32
+    mxc2f 24 2C 34
+    mxc3f 
+    Vector regs contain rows of the original matrix
+    This is computing:
+    vec3_s8 origDir = light[0x8:0xA];
+    vec3_s16 newDir = transpose(mvMatrix[0:2][0:2]) * origDir;
+    newDir /= sqrt(newDir.x**2 + newDir.y**2 + newDir.z**2); //normalize
+    light[0x10:0x12] = light[0x14:0x16] = (vec3_s8)newDir;
+    */
+    lqv     mxc0f,    (mvMatrix + 0x20)($zero)
+    lqv     mxc0i,    (mvMatrix + 0x00)($zero)
+    lsv     mxc1f[2], (mvMatrix + 0x2A)($zero)
+    lsv     mxc1i[2], (mvMatrix + 0x0A)($zero)
+    vmov    mxc1f[0], mxc0f[1]
+    lsv     mxc2f[4], (mvMatrix + 0x34)($zero)
+    vmov    mxc1i[0], mxc0i[1]
+    lsv     mxc2i[4], (mvMatrix + 0x14)($zero)
+    vmov    mxc2f[0], mxc0f[2]
     li      lightPtrBot2B, spFxBase - 2 * lightSize     // Pointer to start of light list, 2 lights behind and relative to spFxBase
-    vmov    col2int[0], col0int[2]                      // load mv[0][2] into col2 element 0 (integer)
+    vmov    mxc2i[0], mxc0i[2]                   
     lpv     $v7[0], (twoLtOfs + 0x8)(lightPtrBot2B)     // Load light direction
-    vmov    col2fra[1], col0fra[6]                      // load mv[1][2] into col2 element 1 (fractional)
-    lsv     col1fra[4], (mvMatrix + 0x32)($zero)        // load mv[2][1] into col1 element 2 (fractional)
-    vmov    col2int[1], col0int[6]                      // load mv[1][2] into col2 element 1 (integer)
-    lsv     col1int[4], (mvMatrix + 0x12)($zero)        // load mv[2][1] into col1 element 2 (integer)
-    vmov    col0fra[1], col0fra[4]                      // load mv[1][0] into col0 element 1 (fractional)
-    lsv     col0fra[4], (mvMatrix + 0x30)($zero)        // load mv[2][0] into col0 element 2 (fractional)
-    vmov    col0int[1], col0int[4]                      // load mv[1][0] into col0 element 1 (integer)
-    lsv     col0int[4], (mvMatrix + 0x10)($zero)        // load mv[2][0] into col0 element 2 (integer)
+    vmov    mxc2f[1], mxc0f[6]
+    lsv     mxc1f[4], (mvMatrix + 0x32)($zero)
+    vmov    mxc2i[1], mxc0i[6]
+    lsv     mxc1i[4], (mvMatrix + 0x12)($zero)
+    vmov    mxc0f[1], mxc0f[4]
+    lsv     mxc0f[4], (mvMatrix + 0x30)($zero)
+    vmov    mxc0i[1], mxc0i[4]
+    lsv     mxc0i[4], (mvMatrix + 0x10)($zero)
 @@loop:
-    vmudn   $v29, col1fra, $v7[1]           // light y direction (fractional)
-    vmadh   $v29, col1int, $v7[1]           // light y direction (integer)
-    vmadn   $v29, col0fra, $v7[0]           // light x direction (fractional)
+    vmudn   $v29, mxc1f, $v7[1]           // light y direction (fractional)
+    vmadh   $v29, mxc1i, $v7[1]           // light y direction (integer)
+    vmadn   $v29, mxc0f, $v7[0]           // light x direction (fractional)
     spv     $v15[0], (twoLtOfs + 0x10)(lightPtrBot2B) // Store transformed light direction; first loop is garbage
-    vmadh   $v29, col0int, $v7[0]           // light x direction (integer)
+    vmadh   $v29, mxc0i, $v7[0]           // light x direction (integer)
     lw      $12, (twoLtOfs + 0x10)(lightPtrBot2B) // Reload transformed light direction
-    vmadn   $v29, col2fra, $v7[2]           // light z direction (fractional)
-    vmadh   $v29, col2int, $v7[2]           // light z direction (integer)
+    vmadn   $v29, mxc2f, $v7[2]           // light z direction (fractional)
+    vmadh   $v29, mxc2i, $v7[2]           // light z direction (integer)
     // Square the low 32 bits of each accumulator element
     vreadacc $v11, ACC_MIDDLE           // read the middle (bits 16..31) of the accumulator elements into v11
     sw      $12, (twoLtOfs + 0x14)(lightPtrBot2B) // Store duplicate of transformed light direction
     vreadacc $v15, ACC_LOWER            // read the low (bits 0..15) of the accumulator elements into v15
-    beq     lightPtrBot2B, tempLightPtrTop1B, After_MVxLightDirs    // exit if equal
+    beq     lightPtrBot2B, tempLightPtrTop1B, After_LightDirMVTransposeNormalize    // exit if equal
      vmudl  $v29, $v11, $v11            // calculate the low partial product of the accumulator squared (low * low)
     vmadm   $v29, $v15, $v11            // calculate the mid partial product of the accumulator squared (mid * low)
     vmadn   $v16, $v11, $v15            // calculate the mid partial product of the accumulator squared (low * mid)
@@ -1776,16 +1840,16 @@ Continue_MVxLightDirs:
      vmadh  $v17, $v15, $v15            // calculate the high partial product of the accumulator squared (mid * mid)
     addi    lightPtrBot2B, lightPtrBot2B, lightSize      // increment light pointer?
 @@skip_incr:
-    vaddc   $v18, $v16, $v16[1]
+    vaddc   $v18, $v16, $v16[1]         // X**2 + Y**2 frac
     li      $11, 1                      // set flag to increment next time through loop
-    vadd    $v29, $v17, $v17[1]
-    vaddc   $v16, $v18, $v16[2]
-    vadd    $v17, $v29, $v17[2]
-    vrsqh   $v29[0], $v17[0]
+    vadd    $v29, $v17, $v17[1]         // X**2 + Y**2 int
+    vaddc   $v16, $v18, $v16[2]         // + Z**2 frac
+    vadd    $v17, $v29, $v17[2]         // + Z**2 int
+    vrsqh   $v29[0], $v17[0]            // In upper rsq v17 (output discarded)
     lpv     $v7[0], (twoLtOfs + lightSize + 0x8)(lightPtrBot2B) // Load direction of next light
-    vrsql   $v16[0], $v16[0]
-    vrsqh   $v17[0], $v0[0]
-    vmudl   $v29, $v11, $v16[0]
+    vrsql   $v16[0], $v16[0]            // Lower rsq v16, do rsq, out lower to v16
+    vrsqh   $v17[0], $v0[0]             // Out upper v17 (input zero)
+    vmudl   $v29, $v11, $v16[0]         // Multiply vector by rsq to normalize
     vmadm   $v29, $v15, $v16[0]
     vmadn   $v11, $v11, $v17[0]
     vmadh   $v15, $v15, $v17[0]
@@ -1794,9 +1858,9 @@ Continue_MVxLightDirs:
 .else
     i7 equ 3
 .endif
-    vmudn   $v11, $v11, $v30[i7]
+    vmudn   $v11, $v11, $v30[i7]        // Scale results to become bytes
     j       @@loop
-     vmadh  $v15, $v15, $v30[i7]
+     vmadh  $v15, $v15, $v30[i7]        // Scale results to become bytes
 
 curMatrix equ $12
 light_vtx:
@@ -1839,7 +1903,7 @@ f3dzex_ovl2_0000144C:
     lqv     $v31[0], (v31Value)($zero)
     lqv     $v30[0], (v30Value)($zero)
     llv     $v22[4], 0x0018(inputVtxPos)
-    bgezal  curMatrix, f3dzex_ovl2_00001480
+    bgezal  curMatrix, lights_loadmtxtwice
      li     curMatrix, mvpMatrix + 0x8000
     andi    $11, $5, G_TEXTURE_GEN_H
     vmrg    $v3, $v0, $v31[5]
@@ -1851,26 +1915,51 @@ f3dzex_ovl2_00001478:
     j       lights_texgenmain
      vmulf  $v21, $v7, $v2[0h]
 
-f3dzex_ovl2_00001480: // curMatrix is either positive mvMatrix or negative mvpMatrix
-    lqv     $v8[0], 0x0000(curMatrix)
-    lqv     $v10[0], 0x0010(curMatrix)
-    lqv     $v12[0], 0x0020(curMatrix)
-    lqv     $v14[0], 0x0030(curMatrix)
-    vcopy   $v9, $v8
-    ldv     $v9[0], 0x0008(curMatrix)
-    vcopy   $v11, $v10
-    ldv     $v11[0], 0x0018(curMatrix)
-    vcopy   $v13, $v12
-    ldv     $v13[0], 0x0028(curMatrix)
-    vcopy   $v15, $v14
-    ldv     $v15[0], 0x0038(curMatrix)
-    ldv     $v8[8], 0x0000(curMatrix)
-    ldv     $v10[8], 0x0010(curMatrix)
-    ldv     $v12[8], 0x0020(curMatrix)
+lights_loadmtxtwice: // curMatrix is either positive mvMatrix or negative mvpMatrix
+    /* Load matrix as follows, drawn like math format (translation = col on right):
+      Integer part   Fractional part
+    E v8  v9 v10 v11 v12 v13 v14 v15     (Example data)
+    0 00  08  10  18  20  28  30  38     Xscl Rot  Rot  Xpos
+    1 02  0A  12  1A  22  2A  32  3A     Rot  Yscl Rot  Ypos
+    2 04  0C  14  1C  24  2C  34  3C     Rot  Rot  Zscl Zpos
+    3 06  0E  16  1E  26  2E  36  3E     0    0    0    1
+    4 00  08  10  18  20  28  30  38
+    5 02  0A  12  1A  22  2A  32  3A
+    6 04  0C  14  1C  24  2C  34  3C
+    7 06  0E  16  1E  26  2E  36  3E
+    Vector regs contain columns of original matrix (v11/v15 have translations)
+    */
+    lqv     mxc0i[0], 0x0000(curMatrix)  // cols 0 and 1, int
+    lqv     mxc2i[0], 0x0010(curMatrix) // cols 2 and 3, int
+    lqv     mxc0f[0], 0x0020(curMatrix) // cols 0 and 1, frac
+    lqv     mxc2f[0], 0x0030(curMatrix) // cols 2 and 3, frac
+    vcopy   mxc1i, mxc0i
+    ldv     mxc1i[0], 0x0008(curMatrix)  // col 1 int twice
+    vcopy   mxc3i, mxc2i
+    ldv     mxc3i[0], 0x0018(curMatrix) // col 3 int twice
+    vcopy   mxc1f, mxc0f
+    ldv     mxc1f[0], 0x0028(curMatrix) // col 1 frac twice
+    vcopy   mxc3f, mxc2f
+    ldv     mxc3f[0], 0x0038(curMatrix) // col 3 frac twice
+    ldv     mxc0i[8], 0x0000(curMatrix)  // col 0 int twice
+    ldv     mxc2i[8], 0x0010(curMatrix) // col 2 int twice
+    ldv     mxc0f[8], 0x0020(curMatrix) // col 0 frac twice
     jr      $ra
-     ldv    $v14[8], 0x0030(curMatrix)
+     ldv    mxc2f[8], 0x0030(curMatrix) // col 2 frac twice
 
-f3dzex_ovl2_000014C4:
+lights_loadmvtranspose3x3twice:
+    /* Load 3x3 portion of MV matrix in transposed orientation
+    Vector regs contain rows of original matrix; elems 3,7 not modified
+      E 0   1   2   3   4   5   6   7
+     v4 00  08  10  -   00  08  10  - 
+    v21 02  0A  12  -   02  0A  12  - 
+    v30 04  0C  14  -   04  0C  14  - 
+    XXX -   -   -   -   -   -   -   - 
+     v3 20  28  30  -   20  28  30  - 
+    v28 22  2A  32  -   22  2A  32  - 
+    v31 24  2C  34  -   24  2C  34  - 
+    XXX -   -   -   -   -   -   -   - 
+    */
     lsv     $v4[0], (mvMatrix)($zero)
     lsv     $v3[0], (mvMatrix + 0x20)($zero)
     lsv     $v21[0], (mvMatrix + 2)($zero)
@@ -1903,11 +1992,11 @@ f3dzex_ovl2_000014C4:
     vmov    $v4[6], $v4[2]
     lsv     $v31[4], (mvMatrix + 0x34)($zero)
     vmov    $v3[6], $v3[2]
-    or      curMatrix, $zero, $zero
+    or      curMatrix, $zero, $zero // Set curMatrix = mvMatrix
     vmov    $v21[6], $v21[2]
     vmov    $v28[6], $v28[2]
     vmov    $v30[6], $v30[2]
-    j       f3dzex_ovl2_00001480
+    j       lights_loadmtxtwice
      vmov   $v31[6], $v31[2]    // v31[2] is 8
 
 /*
@@ -1923,18 +2012,18 @@ v31Value:
 */
 point_lighting_main:
     ldv     $v20[8], 0x0000(inputVtxPos) // load the position of the first input vert into the upper 4 elements of v20
-    bltzal  curMatrix, f3dzex_ovl2_000014C4 // branch if curMatrix is mvp
+    bltzal  curMatrix, lights_loadmvtranspose3x3twice // branch if curMatrix is mvp
      ldv    $v20[0], 0x0010(inputVtxPos) // load the position of the second input vert into the lower 4 elements of v20
-    vmudn   $v2, $v15, $v1[0]
-    ldv     $v29[0], (oneLtOfs + lightSize + 0x8)(lightPtrTop1B)
-    vmadh   $v2, $v11, $v1[0]
-    vmadn   $v2, $v12, $v20[0h]
-    vmadh   $v2, $v8, $v20[0h]
-    vmadn   $v2, $v13, $v20[1h]
-    ldv     $v29[8], (oneLtOfs + lightSize + 0)(lightPtrTop1B)
-    vmadh   $v2, $v9, $v20[1h]
-    vmadn   $v2, $v14, $v20[2h]
-    vmadh   $v2, $v10, $v20[2h]
+    vmudn   $v2, mxc3f, vOne[0]    // Probably 1 * translation column
+    ldv     $v29[0], (oneLtOfs + lightSize + 0x8)(lightPtrTop1B) // Load transformed light dir into lower 4 elements
+    vmadh   $v2, mxc3i, vOne[0]    // Probably 1 * translation column
+    vmadn   $v2, mxc0f, $v20[0h]
+    vmadh   $v2, mxc0i, $v20[0h]
+    vmadn   $v2, mxc1f, $v20[1h]
+    ldv     $v29[8], (oneLtOfs + lightSize + 0x8)(lightPtrTop1B)
+    vmadh   $v2, mxc1i, $v20[1h]
+    vmadn   $v2, mxc2f, $v20[2h]
+    vmadh   $v2, mxc2i, $v20[2h]
     vsub    $v20, $v29, $v2       // v20 = v29 - v2
     vmrg    $v29, $v20, $v0[0]    // v29 = v20 or zero based on vcc
     vmudh   $v2, $v29, $v29       // v2 = v29 * v29
@@ -2066,19 +2155,19 @@ lights_texgenmain:
     vmacf   $v28, $v6, $v20[1h]
     vmacf   $v28, $v5, $v20[2h]
     lqv     $v2[0], (linearGenerateCoefficients)($zero)
-    vmudh   $v22, $v1, $v31[5]      // v31[5] is 16384
+    vmudh   $v22, vOne, $v31[5]      // v31[5] is 16384
     vmacf   $v22, $v3, $v21[0h]
     beqz    $12, vertices_store
      vmacf  $v22, $v4, $v28[0h]
 // Texgen Linear
-    vmadh   $v22, $v1, $v2[0]       // v2[0] is -0.5
+    vmadh   $v22, vOne, $v2[0]       // v2[0] is -0.5
     vmulf   $v4, $v22, $v22
     vmulf   $v3, $v22, $v31[7]      // v31[7] is 0.999969482421875
     vmacf   $v3, $v22, $v2[2]       // v2[2] is 0.849212646484375
 .if (UCODE_IS_F3DEX2_204H)
-    vmudh   $v22, $v1, $v31[5]
+    vmudh   $v22, vOne, $v31[5]
 .else
-    vmudh   $v21, $v1, $v31[5]
+    vmudh   $v21, vOne, $v31[5]
 .endif
     vmacf   $v22, $v22, $v2[1]
     j       vertices_store

@@ -15,11 +15,11 @@ NoN ?= 1
 #  2.08J (Animal Forest) (Recommended over 2.08I due to a change properly zeroes out $v0)
 #  2.08I (Majora's Mask)
 #  2.06H (Ocarina of Time)
-VERSION ?= 2.06H
+VERSION ?= 2.08J
 
 # Set to 1 to enable cel shading, algorithm by Sauraen and glank.
 # If your desired configuration is not in the list below, add it.
-CELSHADING ?= 1
+CELSHADING ?= 0
 
 ARMIPS ?= armips
 
