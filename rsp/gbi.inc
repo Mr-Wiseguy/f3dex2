@@ -115,3 +115,4 @@ G_MV_MATRIX   equ 0x0E
 
 inputVtxSize equ 0x10
 vtxSize equ 0x28
+lightSize equ 0x18
