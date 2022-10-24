@@ -1826,14 +1826,14 @@ Continue_LightDirMVTransposeNormalize:
     vmov    mxc0i[1], mxc0i[4]
     lsv     mxc0i[4], (mvMatrix + 0x10)($zero)
 @@loop:
-    vmudn   $v29, mxc1f, $v7[1]           // light y direction (fractional)
-    vmadh   $v29, mxc1i, $v7[1]           // light y direction (integer)
-    vmadn   $v29, mxc0f, $v7[0]           // light x direction (fractional)
+    vmudn   $v29, mxc1f, $v7[1]         // light y direction (fractional)
+    vmadh   $v29, mxc1i, $v7[1]         // light y direction (integer)
+    vmadn   $v29, mxc0f, $v7[0]         // light x direction (fractional)
     spv     $v15[0], (twoLtOfs + 0x10)(lightPtrBot2B) // Store transformed light direction; first loop is garbage
-    vmadh   $v29, mxc0i, $v7[0]           // light x direction (integer)
+    vmadh   $v29, mxc0i, $v7[0]         // light x direction (integer)
     lw      $12, (twoLtOfs + 0x10)(lightPtrBot2B) // Reload transformed light direction
-    vmadn   $v29, mxc2f, $v7[2]           // light z direction (fractional)
-    vmadh   $v29, mxc2i, $v7[2]           // light z direction (integer)
+    vmadn   $v29, mxc2f, $v7[2]         // light z direction (fractional)
+    vmadh   $v29, mxc2i, $v7[2]         // light z direction (integer)
     // Square the low 32 bits of each accumulator element
     vreadacc $v11, ACC_MIDDLE           // read the middle (bits 16..31) of the accumulator elements into v11
     sw      $12, (twoLtOfs + 0x14)(lightPtrBot2B) // Store duplicate of transformed light direction
@@ -1872,41 +1872,44 @@ curMatrix equ $12
 ltColor equ $v29
 vPairXYZA equ $v27
 vPairXYZACopy equ $v28
+vPairNX equ $v7 // also named vPairRGBA; with name vPairNX, only uses X components
+vPairNY equ $v6
+vPairNZ equ $v5
 
 light_vtx:
-    vadd    $v6, $v0, vPairRGBA[1h]     // Move vertex normals Y ("green") to separate reg
+    vadd    vPairNY, $v0, vPairRGBA[1h]       // Move vertex normals Y to separate reg
 .if UCODE_HAS_POINT_LIGHTING
     luv     ltColor[0], (oneLtOfs + 2 * lightSize)(lightPtrTop1B) // Load next light color (ambient)
 .else
     lpv     $v20[0], (oneLtOfs + 0x10)(lightPtrTop1B) // Load transformed light direction as XYZ_XYZ_
 .endif
-    vadd    $v5, $v0, vPairRGBA[2h]     // Move vertex normals Z ("blue") to separate reg
-    luv     vPairXYZA[0], 8(inputVtxPos)     // Load both verts' XYZAXYZA as unsigned
-    vne     $v4, $v31, $v31[3h]         // Set VCC to 11101110
+    vadd    vPairNZ, $v0, vPairRGBA[2h]       // Move vertex normals Z to separate reg
+    luv     vPairXYZA[0], 8(inputVtxPos)      // Load both verts' XYZAXYZA as unsigned
+    vne     $v4, $v31, $v31[3h]               // Set VCC to 11101110
 .if UCODE_HAS_POINT_LIGHTING
     andi    $11, $5, G_LIGHTING_POSITIONAL_H  // check if point lighting is enabled in the geometry mode
     beqz    $11, directional_lighting         // If not enabled, use directional algorithm for everything
      li     curMatrix, mvpMatrix + 0x8000     // Set flag in negative to indicate cur mtx is MVP
     vaddc   vPairXYZACopy, vPairXYZA, $v0[0]  // Copy vertex normals
-    suv     ltColor[0], 8(inputVtxPos) // Store ambient light color to two verts' RGBARGBA
+    suv     ltColor[0], 8(inputVtxPos)        // Store ambient light color to two verts' RGBARGBA
     ori     $11, $zero, 0x0004
-    vmov    $v30[7], $v30[6]  // v30[7] = 0x0010 because v30[0:2,4:6] will get clobbered
-    mtc2    $11, $v31[6]      // v31[6] = 0x0004 (was previously 0x0420)
+    vmov    $v30[7], $v30[6]                  // v30[7] = 0x0010 because v30[0:2,4:6] will get clobbered
+    mtc2    $11, $v31[6]                      // v31[6] = 0x0004 (was previously 0x0420)
 next_light_dirorpoint:
     lbu     $11, (oneLtOfs + lightSize + 0x3)(lightPtrTop1B) // Load light type / constant attenuation value at light structure + 3
-    bnez    $11, point_lighting_main   // If not zero, use point lighting for the rest of the lights
+    bnez    $11, point_lighting_main          // If not zero, use point lighting for the rest of the lights
      lpv    $v2[0], (oneLtOfs + lightSize + 0x10)(lightPtrTop1B) // Load light transformed direction
-    luv     ltColor[0], 8(inputVtxPos) // Load current light color of two verts RGBARGBA
-    vmulu   $v20, $v7, $v2[0h] // Vertex normals X * light transformed dir X
-    vmacu   $v20, $v6, $v2[1h] // + Vtx Y * light Y
-    vmacu   $v20, $v5, $v2[2h] // + Vtx Z * light Z; only elements 0, 4 matter
+    luv     ltColor[0], 8(inputVtxPos)        // Load current light color of two verts RGBARGBA
+    vmulu   $v20, vPairNX, $v2[0h]            // Vertex normals X * light transformed dir X
+    vmacu   $v20, vPairNY, $v2[1h]            // + Vtx Y * light Y
+    vmacu   $v20, vPairNZ, $v2[2h]            // + Vtx Z * light Z; only elements 0, 4 matter
     luv     $v2[0], (oneLtOfs + lightSize + 0)(lightPtrTop1B) // Load light RGB
-    vmrg    ltColor, ltColor, vPairXYZACopy // Select original alpha
-    vand    $v20, $v20, $v31[7] // 0x7FFF; not sure why AND rather than clamp
-    vmrg    $v2, $v2, $v0[0] // Set elements 3 and 7 of light RGB to 0
-    vmulf   ltColor, ltColor, $v31[7] // Load light color to accumulator (0x7FFF = 0.5 b/c unsigned?)
-    vmacf   ltColor, $v2, $v20[0h] // + light color * dot product
-    suv     ltColor[0], 8(inputVtxPos) // Store new light color of two verts RGBARGBA
+    vmrg    ltColor, ltColor, vPairXYZACopy   // Select original alpha
+    vand    $v20, $v20, $v31[7]               // 0x7FFF; not sure why AND rather than clamp
+    vmrg    $v2, $v2, $v0[0]                  // Set elements 3 and 7 of light RGB to 0
+    vmulf   ltColor, ltColor, $v31[7]         // Load light color to accumulator (0x7FFF = 0.5 b/c unsigned?)
+    vmacf   ltColor, $v2, $v20[0h]            // + light color * dot product
+    suv     ltColor[0], 8(inputVtxPos)        // Store new light color of two verts RGBARGBA
     bne     lightPtrTop1B, spFxBaseReg, next_light_dirorpoint
      addi   lightPtrTop1B, lightPtrTop1B, -lightSize
 return_from_point_lights:
@@ -1916,14 +1919,14 @@ return_from_point_lights:
     bgezal  curMatrix, lights_loadmtxdouble   // Branch if current matrix is MV matrix
      li     curMatrix, mvpMatrix + 0x8000     // Load MVP matrix and set flag for is MVP
     andi    $11, $5, G_TEXTURE_GEN_H
-    vmrg    $v3, $v0, $v31[5] // INSTR 3: Setup for texgen: 0x4000 or zero in pattern 11101110
+    vmrg    $v3, $v0, $v31[5]                 // INSTR 3: Setup for texgen: 0x4000 or zero in pattern 11101110
     beqz    $11, vertices_store               // Done if no texgen
      vge    $v27, $v25, $v31[3]               // INSTR 1: Finishing prev vtx store loop, some sort of clamp Z?
     lpv     $v2[0], (oneLtOfs + lightSize + 0x10)(lightPtrTop1B) // Load last light transformed dir for texgen
     lpv     $v20[0], (oneLtOfs + 0x10)(lightPtrTop1B) // Load second to last light transformed dir for texgen
 f3dzex_ovl2_00001478:
     j       lights_texgenmain
-     vmulf  $v21, $v7, $v2[0h] // First instruction of texgen, vertex normal X * last transformed dir
+     vmulf  $v21, vPairNX, $v2[0h]            // First instruction of texgen, vertex normal X * last transformed dir
 
 lights_loadmtxdouble: // curMatrix is either positive mvMatrix or negative mvpMatrix
     /* Load matrix as follows, drawn like math format (translation = col on right):
@@ -1940,7 +1943,7 @@ lights_loadmtxdouble: // curMatrix is either positive mvMatrix or negative mvpMa
     7 06  0E  16  1E  26  2E  36  3E
     Vector regs contain columns of original matrix (v11/v15 have translations)
     */
-    lqv     mxc0i[0], 0x0000(curMatrix)  // cols 0 and 1, int
+    lqv     mxc0i[0], 0x0000(curMatrix) // cols 0 and 1, int
     lqv     mxc2i[0], 0x0010(curMatrix) // cols 2 and 3, int
     lqv     mxc0f[0], 0x0020(curMatrix) // cols 0 and 1, frac
     lqv     mxc2f[0], 0x0030(curMatrix) // cols 2 and 3, frac
@@ -2007,124 +2010,117 @@ lights_loadmvtranspose3x3double:
     lsv     mvTc1i[4], (mvMatrix + 0x12)($zero)
     vmov    mvTc2i[5], mvTc2i[1]
     lsv     mvTc1f[4], (mvMatrix + 0x32)($zero)
-    vmov    mvTc2f[5], mvTc2f[1]    // v31[1] is 4
+    vmov    mvTc2f[5], mvTc2f[1]
     lsv     mvTc2i[4], (mvMatrix + 0x14)($zero)
     vmov    mvTc0i[6], mvTc0i[2]
     lsv     mvTc2f[4], (mvMatrix + 0x34)($zero)
     vmov    mvTc0f[6], mvTc0f[2]
-    or      curMatrix, $zero, $zero // Set curMatrix = mvMatrix
+    or      curMatrix, $zero, $zero // Set curMatrix = positive mvMatrix
     vmov    mvTc1i[6], mvTc1i[2]
     vmov    mvTc1f[6], mvTc1f[2]
     vmov    mvTc2i[6], mvTc2i[2]
     j       lights_loadmtxdouble
-     vmov   mvTc2f[6], mvTc2f[2]    // v31[2] is 8
+     vmov   mvTc2f[6], mvTc2f[2]
 
-/*
-v31Value:
-.dh 0xFFFF // [0]
-.dh 0x0004 // [1]
-.dh 0x0008 // [2]
-.dh 0x7F00 // [3]
-.dh 0xFFFC // [4]
-.dh 0x4000 // [5]
-.dh 0x0420 // [6]
-.dh 0x7FFF // [7]
-*/
 point_lighting_main:
-    ldv     $v20[8], 0x0000(inputVtxPos) // load the position of the first input vert into the upper 4 elements of v20
-    bltzal  curMatrix, lights_loadmvtranspose3x3double // branch if curMatrix is mvp
-     ldv    $v20[0], 0x0010(inputVtxPos) // load the position of the second input vert into the lower 4 elements of v20
-    vmudn   $v2, mxc3f, vOne[0]    // Probably 1 * translation column
-    ldv     $v29[0], (oneLtOfs + lightSize + 0x8)(lightPtrTop1B) // Load transformed light dir into lower 4 elements
-    vmadh   $v2, mxc3i, vOne[0]    // Probably 1 * translation column
+    ldv     $v20[8], 0x0000(inputVtxPos) // Load v0 pos to upper 4 elements of v20
+    bltzal  curMatrix, lights_loadmvtranspose3x3double // branch if curMatrix is MVP; need MV and MV^T
+     ldv    $v20[0], 0x0010(inputVtxPos) // Load v1 pos to lower 4 elements of v20
+    // Transform input vertices by MV; puts them in camera space
+    vmudn   $v2, mxc3f, vOne[0]          // 1 * translation column
+    ldv     $v29[0], (oneLtOfs + lightSize + 0x8)(lightPtrTop1B) // Load light pos (shorts, same mem as non-transformed light dir) into lower 4 elements
+    vmadh   $v2, mxc3i, vOne[0]          // 1 * translation column
     vmadn   $v2, mxc0f, $v20[0h]
     vmadh   $v2, mxc0i, $v20[0h]
     vmadn   $v2, mxc1f, $v20[1h]
-    ldv     $v29[8], (oneLtOfs + lightSize + 0x8)(lightPtrTop1B)
+    ldv     $v29[8], (oneLtOfs + lightSize + 0x8)(lightPtrTop1B) // Load same light pos into upper 4
     vmadh   $v2, mxc1i, $v20[1h]
     vmadn   $v2, mxc2f, $v20[2h]
     vmadh   $v2, mxc2i, $v20[2h]
-    vsub    $v20, $v29, $v2       // v20 = v29 - v2
-    vmrg    $v29, $v20, $v0[0]    // v29 = v20 or zero based on vcc
-    vmudh   $v2, $v29, $v29       // v2 = v29 * v29
-    vreadacc $v2, ACC_LOWER       // v2 = accumulator lower
-    vreadacc $v29, ACC_MIDDLE     // v2 = accumulator middle
-    vaddc   $v29, $v29, $v29[0q]
-    vadd    $v2, $v2, $v2[0q]
-    vaddc   $v29, $v29, $v29[2h]
-    vadd    $v2, $v2, $v2[2h]
-    vrsqh   $v29[3], $v2[1]
-    vrsql   $v29[3], $v29[1]
-    vrsqh   $v29[2], $v2[5]
+    vsub    $v20, $v29, $v2              // v20 = light pos - camera space verts pos
+    vmrg    $v29, $v20, $v0[0]           // Set elems 3 and 7 to 0
+    vmudh   $v2, $v29, $v29              // Squared
+    vreadacc $v2, ACC_LOWER              // v2 = accumulator lower
+    vreadacc $v29, ACC_MIDDLE            // v29 = accumulator middle
+    vaddc   $v29, $v29, $v29[0q]         // Add X to Y, Z to alpha(0) (middle)
+    vadd    $v2, $v2, $v2[0q]            // Add X to Y, Z to alpha(0) (lower)
+    vaddc   $v29, $v29, $v29[2h]         // Add Z+alpha(0) to all (middle)
+    vadd    $v2, $v2, $v2[2h]            // Add Z+alpha(0) to all (lower)
+    vrsqh   $v29[3], $v2[1]              // Input lower sum vtx 1
+    vrsql   $v29[3], $v29[1]             // Rsqrt lower and upper flipped?
+    vrsqh   $v29[2], $v2[5]              // Get upper result, input lower sum vtx 0
     vrsql   $v29[7], $v29[5]
-    vrsqh   $v29[6], $v0[0]
+    vrsqh   $v29[6], $v0[0]              // Results in v29[2:3, 6:7]
+    // Transform vert-to-light vector by MV transpose. If scale of MV is uniform (same in XYZ),
+    // this is equivalent to MV inverse times scale squared, i.e. transform back into model space.
+    // But if scale of MV is nonuniform, due to stretched camera or model, this will not be correct.
     vmudn   $v2, mvTc0f, $v20[0h]
-    sll     $11, $11, 4
+    sll     $11, $11, 4                  // Holds light type / constant attenuation value (0x3)
     vmadh   $v2, mvTc0i, $v20[0h]
-    lbu     $24, (oneLtOfs + lightSize + 0xE)(lightPtrTop1B)
+    lbu     $24, (oneLtOfs + lightSize + 0xE)(lightPtrTop1B) // Byte from point light props
     vmadn   $v2, mvTc1f, $v20[1h]
-    mtc2    $11, $v27[0]
+    mtc2    $11, $v27[0]                 // 0x3 << 4 -> v27 elems 0, 1
     vmadh   $v2, mvTc1i, $v20[1h]
     vmadn   $v2, mvTc2f, $v20[2h]
-    vmadh   $v20, mvTc2i, $v20[2h]
-    vmudm   $v2, $v20, $v29[3h]
-    vmadh   $v20, $v20, $v29[2h]
-    vmudn   $v2, $v2, $v31[3]   // v31 is mvTc2f but elements 3 and 7 weren't overwritten
-    vmadh   $v20, $v20, $v31[3]
-    vmulu   $v2, $v7, $v20[0h]
-    mtc2    $11, $v27[8]
-    vmacu   $v2, $v6, $v20[1h]
-    lbu     $11, (oneLtOfs + lightSize + 0x7)(lightPtrTop1B)
-    vmacu   $v2, $v5, $v20[2h]
+    vmadh   $v20, mvTc2i, $v20[2h]       // v20 = int result of vert-to-light in model space
+    vmudm   $v2, $v20, $v29[3h]          // v2l_model * length normalization frac
+    vmadh   $v20, $v20, $v29[2h]         // v2l_model * length normalization int
+    vmudn   $v2, $v2, $v31[3]            // this is 0x7F00; v31 is mvTc2f but elements 3 and 7 weren't overwritten
+    vmadh   $v20, $v20, $v31[3]          // scale to byte, only keep int
+    vmulu   $v2, vPairNX, $v20[0h]       // Normal X * normalized vert-to-light X
+    mtc2    $11, $v27[8]                 // 0x3 << 4 -> v27 elems 4, 5
+    vmacu   $v2, vPairNY, $v20[1h]       // Y * Y
+    lbu     $11, (oneLtOfs + lightSize + 0x7)(lightPtrTop1B) // 
+    vmacu   $v2, vPairNZ, $v20[2h]       // Z * Z
     sll     $24, $24, 5
-    vand    $v20, $v2, $v31[7]
-    mtc2    $24, $v20[14]
-    vrcph   $v29[0], $v29[2]
-    vrcpl   $v29[0], $v29[3]
-    vrcph   $v29[4], $v29[6]
-    vrcpl   $v29[4], $v29[7]
-    vmudh   $v2, $v29, $v30[7]
-    mtc2    $11, $v20[6]
-    vmudl   $v2, $v2, $v2[0h]
-    vmulf   $v29, $v29, $v20[3]
-    vmadm   $v29, $v2, $v20[7]
-    vmadn   $v29, $v27, $v30[3]
+    vand    $v20, $v2, $v31[7]           // 0x7FFF; not sure why AND rather than clamp
+    mtc2    $24, $v20[14]                // 0xE << 5 -> v20 elem 7
+    vrcph   $v29[0], $v29[2]             // rcp(rsqrt()) = sqrt = length of vert-to-light
+    vrcpl   $v29[0], $v29[3]             // For vertex 1 in v29[0]
+    vrcph   $v29[4], $v29[6]             // 
+    vrcpl   $v29[4], $v29[7]             // For vertex 0 in v29[4]
+    vmudh   $v2, $v29, $v30[7]           // scale by 0x0010 (value changed in light_vtx) (why?)
+    mtc2    $11, $v20[6]                 // 0x7 -> v20 elem 3
+    vmudl   $v2, $v2, $v2[0h]            // squared
+    vmulf   $v29, $v29, $v20[3]          // Length * byte 0x7
+    vmadm   $v29, $v2, $v20[7]           // + (scaled length squared) * byte 0xE << 5
+    vmadn   $v29, $v27, $v30[3]          // + (byte 0x3 << 4) * 0xFFF0
     vreadacc $v2, ACC_MIDDLE
-    vrcph   $v2[0], $v2[0]
-    vrcpl   $v2[0], $v29[0]
+    vrcph   $v2[0], $v2[0]               // v2 int, v29 frac: function of distance to light
+    vrcpl   $v2[0], $v29[0]              // Reciprocal = inversely proportional
     vrcph   $v2[4], $v2[4]
     vrcpl   $v2[4], $v29[4]
-    luv     ltColor[0], 0x0008(inputVtxPos)
-    vand    $v2, $v2, $v31[7]
-    vmulf   $v2, $v2, $v20
-    luv     $v20[0], (oneLtOfs + lightSize + 0)(lightPtrTop1B)
-    vmrg    ltColor, ltColor, vPairXYZACopy // Same as reg from mv transpose, but A not overwritten
-    vand    $v2, $v2, $v31[7]
-    vmrg    $v20, $v20, $v0[0]
-    vmulf   ltColor, ltColor, $v31[7]
-    vmacf   ltColor, $v20, $v2[0h]
-    suv     ltColor[0], 0x0008(inputVtxPos)
+    luv     ltColor[0], 0x0008(inputVtxPos) // Get current RGBARGBA for two verts
+    vand    $v2, $v2, $v31[7]            // 0x7FFF; not sure why AND rather than clamp
+    vmulf   $v2, $v2, $v20               // Inverse dist factor * dot product (elems 0, 4)
+    luv     $v20[0], (oneLtOfs + lightSize + 0)(lightPtrTop1B) // Light color RGB_RGB_
+    vmrg    ltColor, ltColor, vPairXYZACopy // Merge alpha; vPairXYZACopy = v28 = mvTc1f, but A was not overwritten
+    vand    $v2, $v2, $v31[7]            // 0x7FFF; not sure why AND rather than clamp
+    vmrg    $v20, $v20, $v0[0]           // Zero elements 3 and 7 of light color
+    vmulf   ltColor, ltColor, $v31[7]    // Load light color to accumulator (0x7FFF = 0.5 b/c unsigned?)
+    vmacf   ltColor, $v20, $v2[0h]       // + light color * light amount
+    suv     ltColor[0], 0x0008(inputVtxPos) // Store new RGBARGBA for two verts
     bne     lightPtrTop1B, spFxBaseReg, next_light_dirorpoint
      addi   lightPtrTop1B, lightPtrTop1B, -lightSize
     j       return_from_point_lights
 directional_lighting:
-     lpv     $v20[0], (oneLtOfs + 0x10)(lightPtrTop1B)
+     lpv     $v20[0], (oneLtOfs + 0x10)(lightPtrTop1B) // Load next light transformed dir; this value is overwritten with the same thing
 .else // No point lighting
     luv     ltColor[0], (oneLtOfs + 2 * lightSize)(lightPtrTop1B) // Init to ambient light color
 .endif
 
 // Loop for dot product normals and multiply-add color for 2 lights
 lights_dircoloraccum2:
-    vmulu   $v21, $v7, $v2[0h]           // vtx normals all (X) * light transformed dir 2n+1 X
+    vmulu   $v21, vPairNX, $v2[0h]           // vtx normals all (X) * light transformed dir 2n+1 X
     luv     $v4[0], (oneLtOfs + lightSize + 0)(lightPtrTop1B) // color light 2n+1
-    vmacu   $v21, $v6, $v2[1h]           // + vtx n Y only * light dir 2n+1 Y
+    vmacu   $v21, vPairNY, $v2[1h]           // + vtx n Y only * light dir 2n+1 Y
     beq     lightPtrTop1B, spFxBaseReg, lights_finishone      // Finish pipeline for odd number of lights
-     vmacu  $v21, $v5, $v2[2h]           // + vtx n Z only * light dir 2n+1 Z
-    vmulu   $v28, $v7, $v20[0h]          // vtx normals all (X) * light transformed dir 2n X
+     vmacu  $v21, vPairNZ, $v2[2h]           // + vtx n Z only * light dir 2n+1 Z
+    vmulu   $v28, vPairNX, $v20[0h]          // vtx normals all (X) * light transformed dir 2n X
     luv     $v3[0], (oneLtOfs + 0)(lightPtrTop1B)             // color light 2n
-    vmacu   $v28, $v6, $v20[1h]          // + vtx n Y only * light dir 2n Y
+    vmacu   $v28, vPairNY, $v20[1h]          // + vtx n Y only * light dir 2n Y
     addi    $11, lightPtrTop1B, -lightSize
-    vmacu   $v28, $v5, $v20[2h]          // + vtx n Y only * light dir 2n Y
+    vmacu   $v28, vPairNZ, $v20[2h]          // + vtx n Y only * light dir 2n Y
     addi    lightPtrTop1B, lightPtrTop1B, -(2 * lightSize)
 .if celshading == 0 // In mod, alpha always merged at the end 
     vmrg    ltColor, ltColor, vPairXYZA  // select orig alpha
@@ -2162,18 +2158,18 @@ lights_texgenpre:
 // Texgen beginning
     vge     $v27, $v25, $v31[3]         // INSTR 1: Finishing prev vtx store loop, some sort of clamp Z?
     andi    $11, $5, G_TEXTURE_GEN_H
-    vmulf   $v21, $v7, $v2[0h]          // Vertex normal X * last light dir X
+    vmulf   $v21, vPairNX, $v2[0h]      // Vertex normal X * last light dir X
     beqz    $11, vertices_store
      suv    ltColor[0], 0x0008(inputVtxPos) // write back color/alpha for two verts
 lights_texgenmain:
 // Texgen main
-    vmacf   $v21, $v6, $v2[1h]          // VN Y * last light dir Y
+    vmacf   $v21, vPairNY, $v2[1h]      // VN Y * last light dir Y
     andi    $12, $5, G_TEXTURE_GEN_LINEAR_H
-    vmacf   $v21, $v5, $v2[2h]          // VN Z * last light dir Z
+    vmacf   $v21, vPairNZ, $v2[2h]      // VN Z * last light dir Z
     vxor    $v4, $v3, $v31[5]           // v4 is now 0x4000 in opposite pattern as v3, 00010001
-    vmulf   $v28, $v7, $v20[0h]         // VN XYZ * second to last light dir XYZ
-    vmacf   $v28, $v6, $v20[1h]         // Y
-    vmacf   $v28, $v5, $v20[2h]         // Z
+    vmulf   $v28, vPairNX, $v20[0h]     // VN XYZ * second to last light dir XYZ
+    vmacf   $v28, vPairNY, $v20[1h]     // Y
+    vmacf   $v28, vPairNZ, $v20[2h]     // Z
     lqv     $v2[0], (linearGenerateCoefficients)($zero)
     vmudh   vPairST, vOne, $v31[5]      // S, T init to 0x4000 each
     vmacf   vPairST, $v3, $v21[0h]      // Add dot product with last light to S (only care about elems 2,3,6,7)
