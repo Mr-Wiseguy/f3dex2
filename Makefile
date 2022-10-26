@@ -1,8 +1,8 @@
 # Selects the microcode to assemble. Options are F3DEX2 and F3DZEX
-UCODE ?= F3DZEX
+UCODE ?= F3DEX2
 
 # Set to 1 to enable NoN(No Nearclipping). Note that no official F3DZEX exists without NoN.
-NoN ?= 1
+NoN ?= 0
 
 # Selects which version of a given microcode to build:
 # F3DEX2:
@@ -15,23 +15,17 @@ NoN ?= 1
 #  2.08J (Animal Forest) (Recommended over 2.08I due to a change properly zeroes out $v0)
 #  2.08I (Majora's Mask)
 #  2.06H (Ocarina of Time)
-VERSION ?= 2.08J
-
-# Set to 1 to enable cel shading, algorithm by Sauraen and glank.
-CELSHADING ?= 0
+VERSION ?= 2.08
 
 ARMIPS ?= armips
 
 OUTPUT_DIR ?= ./
 
-# List of all microcodes buildable with this codebase.
-# If your desired configuration is not in the list below, add it here, though
-# you won't get MD5sum checking.
+# List of all microcodes buildable with this codebase
 UCODES := F3DEX2_2.08 F3DEX2_2.07 F3DEX2_2.04H F3DEX2_2.08PL \
           F3DEX2_NoN_2.08 F3DEX2_NoN_2.07 F3DEX2_NoN_2.04H F3DEX2_NoN_2.08PL \
           F3DZEX_2.08J F3DZEX_2.08I F3DZEX_2.06H \
-          F3DZEX_NoN_2.08J F3DZEX_NoN_2.08I F3DZEX_NoN_2.06H \
-          F3DZEX_NoN_cel_2.06H F3DZEX_NoN_cel_2.08J
+		      F3DZEX_NoN_2.08J F3DZEX_NoN_2.08I F3DZEX_NoN_2.06H
 
 # F3DEX2
 MD5_CODE_F3DEX2_2.08      := 6ccf5fc392e440fb23bc7d7f7d71047c
@@ -51,11 +45,6 @@ MD5_CODE_F3DZEX_NoN_2.08I := ca0a31df36dbeda69f09e9850e68c7f7
 MD5_DATA_F3DZEX_NoN_2.08I := d31cea0e173c6a4a09e4dfe8f259c91b
 MD5_CODE_F3DZEX_NoN_2.06H := 96a1a7a8eab45e0882aab9e4d8ccbcc3
 MD5_DATA_F3DZEX_NoN_2.06H := e48c7679f1224b7c0947dcd5a4d0c713
-# Cel shading microcodes
-MD5_CODE_F3DZEX_NoN_cel_2.06H := da105ba384d036b69f7efa5bc3c14f1e
-MD5_DATA_F3DZEX_NoN_cel_2.06H := $(MD5_DATA_F3DZEX_NoN_2.06H)
-MD5_CODE_F3DZEX_NoN_cel_2.08J := 00000000000000000000000000000000
-MD5_DATA_F3DZEX_NoN_cel_2.08J := $(MD5_DATA_F3DZEX_NoN_2.08J)
 
 # Microcode strings
 # F3DEX2
@@ -76,9 +65,6 @@ NAME_F3DZEX_2.06H      := RSP Gfx ucode F3DZEX.NoN  fifo 2.06H Yoshitaka Yasumot
 NAME_F3DZEX_NoN_2.08J  := RSP Gfx ucode F3DZEX.NoN  fifo 2.08J Yoshitaka Yasumoto/Kawasedo 1999.
 NAME_F3DZEX_NoN_2.08I  := RSP Gfx ucode F3DZEX.NoN  fifo 2.08I Yoshitaka Yasumoto/Kawasedo 1999.
 NAME_F3DZEX_NoN_2.06H  := RSP Gfx ucode F3DZEX.NoN  fifo 2.06H Yoshitaka Yasumoto 1998 Nintendo.
-# Cel shading microcodes
-NAME_F3DZEX_NoN_cel_2.06H := $(NAME_F3DZEX_NoN_2.06H)
-NAME_F3DZEX_NoN_cel_2.08J := $(NAME_F3DZEX_NoN_2.08J)
 
 ID_F3DEX2_2.04H  := 0
 ID_F3DEX2_2.07   := 1
@@ -108,9 +94,9 @@ WARNING := $(YELLOW)
 define set_vars
   FULL_UCODE := $(1)
   # These need to be eval'd to use their values in this same function
-  CUR_UCODE_NO_SUFFIX := $$(subst _cel,,$(subst _NoN,,$(1)))
-  CUR_VERSION := $$(subst F3DZEX_,,$$(subst F3DEX2_,,$$(CUR_UCODE_NO_SUFFIX)))
-  CUR_UCODE := $$(patsubst %_$$(CUR_VERSION),%,$$(CUR_UCODE_NO_SUFFIX))
+  CUR_UCODE_WITHOUT_NON := $(subst _NoN,,$(1))
+  CUR_VERSION := $$(subst F3DZEX_,,$$(subst F3DEX2_,,$$(CUR_UCODE_WITHOUT_NON)))
+  CUR_UCODE := $$(patsubst %_$$(CUR_VERSION),%,$$(CUR_UCODE_WITHOUT_NON))
   FULL_OUTPUT_DIR := $$(OUTPUT_DIR)/$(1)
 ifeq ($(OS),Windows_NT)
   FULL_OUTPUT_DIR := $$(subst /,\,$$(FULL_OUTPUT_DIR))
@@ -125,14 +111,9 @@ endif
   else
     CUR_NoN := 1
   endif
-  ifeq ($(findstring _cel,$(1)),)
-    CUR_celshading := 0
-  else
-    CUR_celshading := 1
-  endif
 
   NAME := $(NAME_$(1))
-  ID := $$(ID_$$(CUR_UCODE_NO_SUFFIX))
+  ID := $$(ID_$$(CUR_UCODE_WITHOUT_NON))
   TYPE := $$(TYPE_$$(CUR_UCODE))
   CODE_MD5 := $$(MD5_CODE_$(1))
   DATA_MD5 := $$(MD5_DATA_$(1))
@@ -144,7 +125,7 @@ define ucode_rule
 
   $(CODE_FILE) $(DATA_FILE) $(SYM_FILE) $(SYM2_FILE) $(TEMP_FILE): ./f3dex2.s ./rsp/* $(FULL_OUTPUT_DIR)
 	@printf "$(INFO)Building microcode: $(FULL_UCODE)$(NO_COL)\n"
-	$(ARMIPS) -strequ DATA_FILE $(DATA_FILE) -strequ CODE_FILE $(CODE_FILE) -strequ NAME "$(NAME)" -equ UCODE_TYPE $(TYPE) -equ UCODE_ID $(ID) -equ NoN $(CUR_NoN) -equ celshading $(CUR_celshading) f3dex2.s -sym2 $(SYM_FILE) -temp $(TEMP_FILE)
+	@$(ARMIPS) -strequ DATA_FILE $(DATA_FILE) -strequ CODE_FILE $(CODE_FILE) -strequ NAME "$(NAME)" -equ UCODE_TYPE $(TYPE) -equ UCODE_ID $(ID) -equ NoN $(CUR_NoN) f3dex2.s -sym2 $(SYM_FILE) -temp $(TEMP_FILE)
   ifeq ($(CODE_MD5),)
 	@printf "  $(WARNING)Nothing to compare $(1) to!$(NO_COL)\n"
   else
@@ -165,12 +146,10 @@ endif
   CODE_FILES += $(CODE_FILE)
 endef
 
-SUFFIX :=
 ifeq ($(NoN),1)
-  SUFFIX :=_NoN
-endif
-ifeq ($(CELSHADING),1)
-  SUFFIX :=$(SUFFIX)_cel
+  SUFFIX := _NoN
+else
+  SUFFIX := 
 endif
 INPUT_UCODE := $(UCODE)$(SUFFIX)_$(VERSION)
 FULL_OUTPUT_DIR := $(OUTPUT_DIR)/$(INPUT_UCODE)
@@ -179,7 +158,6 @@ ifeq ($(OS),Windows_NT)
 endif
 CODE_FILE := $(FULL_OUTPUT_DIR)/$(INPUT_UCODE).code
 DATA_FILE := $(FULL_OUTPUT_DIR)/$(INPUT_UCODE).data
-$(warning CODE_FILE $(CODE_FILE) DATA_FILE $(DATA_FILE))
 
 default: $(CODE_FILE) $(DATA_FILE)
 

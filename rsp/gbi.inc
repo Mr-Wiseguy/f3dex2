@@ -13,7 +13,6 @@ OS_YIELD_DATA_SIZE equ 0xC00
 G_ZBUFFER               equ 0x00000001
 G_TEXTURE_ENABLE        equ 0x00000002
 G_SHADE                 equ 0x00000004
-G_LIGHTTOALPHA          equ 0x00000008 // Light intensity -> shade alpha (for cel shading)
 // In this byte, the whole byte is used as an index into a table, so using any
 // other bits will break forwards compatibility. Again, if you only want
 // backwards compatibility, AND 0x06 when this is loaded and then you can use
@@ -31,7 +30,9 @@ G_LIGHTING_POSITIONAL   equ 0x00400000
 G_CLIPPING              equ 0x00800000 // Initially on, but never checked
 // The top byte holds the geometry mode opcode in the clear mask, so all its
 // bits will either get cleared every time geom mode is set, or can never be
-// cleared.
+// cleared. The info in gbi.h warning programmers not to use the high 8 bits
+// because they form a "clip code mask" is kind of irrelevant given that these
+// bits can't be properly set or cleared.
 
 G_FOG_H                 equ G_FOG / 0x10000
 G_LIGHTING_H            equ G_LIGHTING / 0x10000
