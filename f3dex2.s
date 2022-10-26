@@ -1624,7 +1624,7 @@ Overlay0Address:
     jal     dma_read_write          // initiate DMA read
      li     $19, 0x0F48 - 1
     lw      $24, rdpHalf1Val
-    la      $20, 0x0180             // DMA address; equal to but probably not actuall spFxBase or clipRatio
+    la      $20, 0x0180             // DMA address; equal to but probably not actually spFxBase or clipRatio
     andi    $19, cmd_w0, 0x0FFF
     add     $24, $24, $20
     jal     dma_read_write          // initate DMA read
