@@ -18,14 +18,15 @@ NoN ?= 1
 VERSION ?= 2.08J
 
 # Set to 1 to enable cel shading, algorithm by Sauraen and glank.
-# If your desired configuration is not in the list below, add it.
 CELSHADING ?= 0
 
 ARMIPS ?= armips
 
 OUTPUT_DIR ?= ./
 
-# List of all microcodes buildable with this codebase
+# List of all microcodes buildable with this codebase.
+# If your desired configuration is not in the list below, add it here, though
+# you won't get MD5sum checking.
 UCODES := F3DEX2_2.08 F3DEX2_2.07 F3DEX2_2.04H F3DEX2_2.08PL \
           F3DEX2_NoN_2.08 F3DEX2_NoN_2.07 F3DEX2_NoN_2.04H F3DEX2_NoN_2.08PL \
           F3DZEX_2.08J F3DZEX_2.08I F3DZEX_2.06H \
