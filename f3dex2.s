@@ -2187,23 +2187,23 @@ lights_texgenpre:
 // Texgen beginning
     vge     $v27, $v25, $v31[3]         // INSTR 1: Finishing prev vtx store loop, some sort of clamp Z?
     andi    $11, $5, G_TEXTURE_GEN_H
-    vmulf   $v21, vPairNX, $v2[0h]      // Vertex normal X * last light dir X
+    vmulf   $v21, vPairNX, $v2[0h]      // Vertex normal X * lookat 0 dir X
     beqz    $11, vertices_store
      suv    ltColor[0], 0x0008(inputVtxPos) // write back color/alpha for two verts
 lights_texgenmain:
 // Texgen main
-    vmacf   $v21, vPairNY, $v2[1h]      // VN Y * last light dir Y
+    vmacf   $v21, vPairNY, $v2[1h]      // VN Y * lookat 0 dir Y
     andi    $12, $5, G_TEXTURE_GEN_LINEAR_H
-    vmacf   $v21, vPairNZ, $v2[2h]      // VN Z * last light dir Z
+    vmacf   $v21, vPairNZ, $v2[2h]      // VN Z * lookat 0 dir Z
     vxor    $v4, $v3, $v31[5]           // v4 is now 0x4000 in opposite pattern as v3, 00010001
-    vmulf   $v28, vPairNX, $v20[0h]     // VN XYZ * second to last light dir XYZ
+    vmulf   $v28, vPairNX, $v20[0h]     // VN XYZ * lookat 1 dir XYZ
     vmacf   $v28, vPairNY, $v20[1h]     // Y
     vmacf   $v28, vPairNZ, $v20[2h]     // Z
     lqv     $v2[0], (linearGenerateCoefficients)($zero)
     vmudh   vPairST, vOne, $v31[5]      // S, T init to 0x4000 each
-    vmacf   vPairST, $v3, $v21[0h]      // Add dot product with last light to S (only care about elems 2,3,6,7)
+    vmacf   vPairST, $v3, $v21[0h]      // Add dot product with lookat 0 to S (only care about elems 2,3,6,7)
     beqz    $12, vertices_store
-     vmacf  vPairST, $v4, $v28[0h]      // Add dot product with second to last light to T (elems 3, 7)
+     vmacf  vPairST, $v4, $v28[0h]      // Add dot product with lookat 1 to T (elems 3, 7)
 // Texgen Linear--not sure what formula this is implementing
     vmadh   vPairST, vOne, $v2[0]       // ST + Coefficient 0xC000
     vmulf   $v4, vPairST, vPairST       // ST squared
