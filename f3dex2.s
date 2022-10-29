@@ -761,7 +761,7 @@ savedNearclip equ $29
 vPairMVPPosI equ $v24
 vPairMVPPosF equ $v23
 vPairST equ $v22
-vPairRGBA equ $v7
+vPairRGBATemp equ $v7
 
 Overlay3Address:
     li      $11, overlayInfo2       // set up a load for overlay 2
@@ -1027,7 +1027,7 @@ vertices_process_pair:
     vmadn   $v29, mxc1f, $v20[1h]
     sw      $11, 8(inputVtxPos)                    // Move the first vertex's colors/normals into the word before the second vertex's
     vmadh   $v29, mxc1i, $v20[1h]
-    lpv     vPairRGBA[0], 8(inputVtxPos)           // Load both vertex's colors/normals into v7's elements RGBARGBA or XYZAXYZA
+    lpv     vPairRGBATemp[0], 8(inputVtxPos)       // Load both vertex's colors/normals into v7's elements RGBARGBA or XYZAXYZA
     vmadn   vPairMVPPosF, mxc2f, $v20[2h]          // vPairMVPPosF = MVP * vpos result frac
     bnez    tmpCurLight, light_vtx                 // Zero if lighting disabled, pointer if enabled
      vmadh  vPairMVPPosI, mxc2i, $v20[2h]          // vPairMVPPosI = MVP * vpos result int
@@ -1913,9 +1913,9 @@ Continue_LightDirMVTransposeNormalize:
 
 curMatrix equ $12
 ltColor equ $v29
-vPairXYZA equ $v27
-vPairXYZACopy equ $v28
-vPairNX equ $v7 // also named vPairRGBA; with name vPairNX, only uses X components
+vPairRGBA equ $v27
+vPairAlpha37 equ $v28 // Same as mvTc1f, but alpha values are left in elems 3, 7
+vPairNX equ $v7 // also named vPairRGBATemp; with name vPairNX, uses X components = elems 0, 4
 vPairNY equ $v6
 vPairNZ equ $v5
 
@@ -1928,20 +1928,20 @@ mvTc1f equ $v28
 mvTc2f equ $v31
 
 light_vtx:
-    vadd    vPairNY, $v0, vPairRGBA[1h]       // Move vertex normals Y to separate reg
+    vadd    vPairNY, $v0, vPairRGBATemp[1h]   // Move vertex normals Y to separate reg
 .if UCODE_HAS_POINT_LIGHTING
     luv     ltColor[0], (ltBufOfs + lightSize + 0)(curLight) // Load next light color (ambient)
 .else
     lpv     $v20[0], (ltBufOfs - lightSize + 0x10)(curLight) // Load next below transformed light direction as XYZ_XYZ_ for lights_dircoloraccum2
 .endif
-    vadd    vPairNZ, $v0, vPairRGBA[2h]       // Move vertex normals Z to separate reg
-    luv     vPairXYZA[0], 8(inputVtxPos)      // Load both verts' XYZAXYZA as unsigned
+    vadd    vPairNZ, $v0, vPairRGBATemp[2h]   // Move vertex normals Z to separate reg
+    luv     vPairRGBA[0], 8(inputVtxPos)      // Load both verts' XYZAXYZA as unsigned
     vne     $v4, $v31, $v31[3h]               // Set VCC to 11101110
 .if UCODE_HAS_POINT_LIGHTING
     andi    $11, $5, G_LIGHTING_POSITIONAL_H  // check if point lighting is enabled in the geometry mode
     beqz    $11, directional_lighting         // If not enabled, use directional algorithm for everything
      li     curMatrix, mvpMatrix + 0x8000     // Set flag in negative to indicate cur mtx is MVP
-    vaddc   vPairXYZACopy, vPairXYZA, $v0[0]  // Copy vertex normals
+    vaddc   vPairAlpha37, vPairRGBA, $v0[0]   // Copy vertex alpha
     suv     ltColor[0], 8(inputVtxPos)        // Store ambient light color to two verts' RGBARGBA
     ori     $11, $zero, 0x0004
     vmov    $v30[7], $v30[6]                  // v30[7] = 0x0010 because v30[0:2,4:6] will get clobbered
@@ -1955,7 +1955,7 @@ next_light_dirorpoint:
     vmacu   $v20, vPairNY, $v2[1h]            // + Vtx Y * light Y
     vmacu   $v20, vPairNZ, $v2[2h]            // + Vtx Z * light Z; only elements 0, 4 matter
     luv     $v2[0], (ltBufOfs + 0)(curLight)  // Load light RGB
-    vmrg    ltColor, ltColor, vPairXYZACopy   // Select original alpha
+    vmrg    ltColor, ltColor, vPairAlpha37    // Select original alpha
     vand    $v20, $v20, $v31[7]               // 0x7FFF; not sure why AND rather than clamp
     vmrg    $v2, $v2, $v0[0]                  // Set elements 3 and 7 of light RGB to 0
     vmulf   ltColor, ltColor, $v31[7]         // Load light color to accumulator (0x7FFF = 0.5 b/c unsigned?)
@@ -2138,7 +2138,7 @@ point_lighting_main:
     vand    $v2, $v2, $v31[7]            // 0x7FFF; not sure why AND rather than clamp
     vmulf   $v2, $v2, $v20               // Inverse dist factor * dot product (elems 0, 4)
     luv     $v20[0], (ltBufOfs + 0)(curLight) // Light color RGB_RGB_
-    vmrg    ltColor, ltColor, vPairXYZACopy // Merge alpha; vPairXYZACopy = v28 = mvTc1f, but A was not overwritten
+    vmrg    ltColor, ltColor, vPairAlpha37 // Select orig alpha; vPairAlpha37 = v28 = mvTc1f, but alphas were not overwritten
     vand    $v2, $v2, $v31[7]            // 0x7FFF; not sure why AND rather than clamp
     vmrg    $v20, $v20, $v0[0]           // Zero elements 3 and 7 of light color
     vmulf   ltColor, ltColor, $v31[7]    // Load light color to accumulator (0x7FFF = 0.5 b/c unsigned?)
@@ -2167,7 +2167,7 @@ lights_dircoloraccum2:
     addi    $11, curLight, -lightSize    // Subtract 1 light for comparison at bottom of loop
     vmacu   $v28, vPairNZ, $v20[2h]      // + vtx n Y only * light dir 2n Y
     addi    curLight, curLight, -(2 * lightSize)
-    vmrg    ltColor, ltColor, vPairXYZA  // select orig alpha
+    vmrg    ltColor, ltColor, vPairRGBA  // select orig alpha
     mtc2    $zero, $v4[6]                // light 2n+1 color comp 3 = 0 (to not interfere with alpha)
     vmrg    $v3, $v3, $v0[0]             // light 2n color components 3,7 = 0
     mtc2    $zero, $v4[14]               // light 2n+1 color comp 7 = 0 (to not interfere with alpha)
@@ -2219,7 +2219,7 @@ lights_texgenmain:
      vmacf  vPairST, $v4, $v3           // + ST squared * (ST + ST * coeff)
 
 lights_finishone:
-    vmrg    ltColor, ltColor, vPairXYZA // select orig alpha
+    vmrg    ltColor, ltColor, vPairRGBA // select orig alpha
     vmrg    $v4, $v4, $v0[0]            // clear alpha component of color
     vand    $v21, $v21, $v31[7]         // 0x7FFF; not sure why AND rather than clamp
     veq     $v3, $v31, $v31[3h]         // set VCC to 00010001, opposite of 2 light case
