@@ -1970,7 +1970,7 @@ return_from_point_lights:
     bgezal  curMatrix, lights_loadmtxdouble   // Branch if current matrix is MV matrix
      li     curMatrix, mvpMatrix + 0x8000     // Load MVP matrix and set flag for is MVP
     andi    $11, $5, G_TEXTURE_GEN_H
-    vmrg    $v3, $v0, $v31[5]                 // INSTR 3: Setup for texgen: 0x4000 or zero in pattern 11101110
+    vmrg    $v3, $v0, $v31[5]                 // INSTR 3: Setup for texgen: 0x4000 in elems 3, 7
     beqz    $11, vertices_store               // Done if no texgen
      vge    $v27, $v25, $v31[3]               // INSTR 1: Finishing prev vtx store loop, some sort of clamp Z?
     lpv     $v2[0], (ltBufOfs + 0x10)(curLight) // Load lookat 1 transformed dir for texgen (curLight was decremented)
@@ -2180,30 +2180,30 @@ lights_dircoloraccum2:
     bne     $11, spFxBaseReg, lights_dircoloraccum2 // Pointer 1 behind, minus 1 light, if at base then done
      vmacf  ltColor, $v3, $v28[0h]       // + color 2n * dot product
 // End of loop for even number of lights
-    vmrg    $v3, $v0, $v31[5]            // INSTR 3: Setup for texgen: 0x4000 or zero in pattern 11101110
+    vmrg    $v3, $v0, $v31[5]            // INSTR 3: Setup for texgen: 0x4000 in elems 3, 7
     llv     vPairST[4], (inputVtxSize + 8)(inputVtxPos)  // INSTR 2: load the texture coords of the 2nd vertex into v22[4-7]
     
 lights_texgenpre:
 // Texgen beginning
     vge     $v27, $v25, $v31[3]         // INSTR 1: Finishing prev vtx store loop, some sort of clamp Z?
     andi    $11, $5, G_TEXTURE_GEN_H
-    vmulf   $v21, vPairNX, $v2[0h]      // Vertex normal X * lookat 0 dir X
+    vmulf   $v21, vPairNX, $v2[0h]      // Vertex normal X * lookat 1 dir X
     beqz    $11, vertices_store
      suv    ltColor[0], 0x0008(inputVtxPos) // write back color/alpha for two verts
 lights_texgenmain:
 // Texgen main
-    vmacf   $v21, vPairNY, $v2[1h]      // VN Y * lookat 0 dir Y
+    vmacf   $v21, vPairNY, $v2[1h]      // VN Y * lookat 1 dir Y
     andi    $12, $5, G_TEXTURE_GEN_LINEAR_H
-    vmacf   $v21, vPairNZ, $v2[2h]      // VN Z * lookat 0 dir Z
-    vxor    $v4, $v3, $v31[5]           // v4 is now 0x4000 in opposite pattern as v3, 00010001
-    vmulf   $v28, vPairNX, $v20[0h]     // VN XYZ * lookat 1 dir XYZ
+    vmacf   $v21, vPairNZ, $v2[2h]      // VN Z * lookat 1 dir Z
+    vxor    $v4, $v3, $v31[5]           // v4 has 0x4000 in opposite pattern as v3, normally 11101110
+    vmulf   $v28, vPairNX, $v20[0h]     // VN XYZ * lookat 0 dir XYZ
     vmacf   $v28, vPairNY, $v20[1h]     // Y
     vmacf   $v28, vPairNZ, $v20[2h]     // Z
     lqv     $v2[0], (linearGenerateCoefficients)($zero)
     vmudh   vPairST, vOne, $v31[5]      // S, T init to 0x4000 each
-    vmacf   vPairST, $v3, $v21[0h]      // Add dot product with lookat 0 to S (only care about elems 2,3,6,7)
+    vmacf   vPairST, $v3, $v21[0h]      // Add dot product with lookat 1 to T (elems 3, 7)
     beqz    $12, vertices_store
-     vmacf  vPairST, $v4, $v28[0h]      // Add dot product with lookat 1 to T (elems 3, 7)
+     vmacf  vPairST, $v4, $v28[0h]      // Add dot product with lookat 0 to S (elems 2, 6)
 // Texgen Linear--not sure what formula this is implementing
     vmadh   vPairST, vOne, $v2[0]       // ST + Coefficient 0xC000
     vmulf   $v4, vPairST, vPairST       // ST squared
@@ -2224,7 +2224,7 @@ lights_finishone:
     vand    $v21, $v21, $v31[7]         // 0x7FFF; not sure why AND rather than clamp
     veq     $v3, $v31, $v31[3h]         // set VCC to 00010001, opposite of 2 light case
     lpv     $v2[0], (ltBufOfs - 2 * lightSize + 0x10)(curLight) // Load second dir down, lookat 0, for texgen
-    vmrg    $v3, $v0, $v31[5]           // INSTR 3: Setup for texgen: 0x4000 or zero in OPPOSITE pattern 00010001
+    vmrg    $v3, $v0, $v31[5]           // INSTR 3 OPPOSITE: Setup for texgen: 0x4000 in 0,1,2,4,5,6
     llv     vPairST[4], (inputVtxSize + 8)(inputVtxPos)  // INSTR 2: load the texture coords of the 2nd vertex into v22[4-7]
     vmulf   ltColor, ltColor, $v31[7]   // Move cur color to accumulator
     j       lights_texgenpre
