@@ -60,13 +60,20 @@ overlay_imem equ 0x0006
 .create DATA_FILE, 0x0000
 
 /*
-Matrices are stored like in OpenGL, where adjacent elements form a column
-vector. In C, this would be matrix[col][row]. For the integer part:
-00 08 10 18  typical  Xscl Rot  Rot  Xpos
-02 0A 12 1A  use:     Rot  Yscl Rot  Ypos
-04 0C 14 1C           Rot  Rot  Zscl Zpos
-06 0E 16 1E           0    0    0    1
+Matrices are stored and used in a transposed format compared to how they are
+normally written in mathematics. For the integer part:
+00 02 04 06  typical  Xscl Rot  Rot  0
+08 0A 0C 0E  use:     Rot  Yscl Rot  0
+10 12 14 16           Rot  Rot  Zscl 0
+18 1A 1C 1E           Xpos Ypos Zpos 1
 The fractional part comes next and is in the same format.
+Applying this transformation is done by multiplying a row vector times the
+matrix, like:
+X  Y  Z  1  *  Xscl Rot  Rot  0  =  NewX NewY NewZ 1
+               Rot  Yscl Rot  0
+               Rot  Rot  Zscl 0
+               Xpos Ypos Zpos 1
+In C, the matrix is accessed as matrix[row][col], and the vector is vector[row].
 */
 // 0x0000-0x0040: modelview matrix
 mvMatrix:
@@ -81,15 +88,15 @@ mvpMatrix:
     .fill 64
     
 // Not global names, but used multiple times with the same meaning.
-// Matrix column X integer/fractional
-mxc0i equ $v8
-mxc1i equ $v9
-mxc2i equ $v10
-mxc3i equ $v11
-mxc0f equ $v12
-mxc1f equ $v13
-mxc2f equ $v14
-mxc3f equ $v15
+// Matrix row X integer/fractional
+mxr0i equ $v8
+mxr1i equ $v9
+mxr2i equ $v10
+mxr3i equ $v11
+mxr0f equ $v12
+mxr1f equ $v13
+mxr2f equ $v14
+mxr3f equ $v15
 
 // 0x00C0-0x00C8: scissor (four 12-bit values)
 scissorUpLeft: // the command byte is included since the command word is copied verbatim
@@ -972,58 +979,58 @@ after_light_dir_xfrm:
      li     $19, mvpMatrix
 
 vertex_skip_recalc_mvp:
-    /* Load MVP matrix as follows, drawn like math format (translation = col on right):
-      Integer part   Fractional part
-    E v8  v9 v10 v11 v12 v13 v14 v15     (Example data)
-    0 00  08  10  18  20  28  30  38     Xscl Rot  Rot  Xpos
-    1 02  0A  12  1A  22  2A  32  3A     Rot  Yscl Rot  Ypos
-    2 04  0C  14  1C  24  2C  34  3C     Rot  Rot  Zscl Zpos
-    3 06  0E  16  1E  26  2E  36  3E     0    0    0    1
-    4 00  08  10  18  20  28  30  38
-    5 02  0A  12  1A  22  2A  32  3A
-    6 04  0C  14  1C  24  2C  34  3C
-    7 06  0E  16  1E  26  2E  36  3E
-    Vector regs contain columns of original matrix (v11/v15 have translations)
+    /* Load MVP matrix as follows--note that translation is in the bottom row,
+    not the right column.
+    Elem   0   1   2   3   4   5   6   7      (Example data)
+    I v8  00  02  04  06  00  02  04  06      Xscl Rot  Rot   0
+    I v9  08  0A  0C  0E  08  0A  0C  0E      Rot  Yscl Rot   0
+    I v10 10  12  14  16  10  12  14  16      Rot  Rot  Zscl  0
+    I v11 18  1A  1C  1E  18  1A  1C  1E      Xpos Ypos Zpos  1
+    F v12 20  22  24  26  20  22  24  26
+    F v13 28  2A  2C  2E  28  2A  2C  2E
+    F v14 30  32  34  36  30  32  34  36
+    F v15 38  3A  3C  3E  38  3A  3C  3E
+    Vector regs contain rows of original matrix (v11/v15 have translations)
     */
-    lqv     mxc0i,    (mvpMatrix +  0)($zero)
-    lqv     mxc2i,    (mvpMatrix + 16)($zero)
-    lqv     mxc0f,    (mvpMatrix + 32)($zero)
-    lqv     mxc2f,    (mvpMatrix + 48)($zero)
-    vcopy   mxc1i, mxc0i
-    ldv     mxc1i,    (mvpMatrix +  8)($zero)
-    vcopy   mxc3i, mxc2i
-    ldv     mxc3i,    (mvpMatrix + 24)($zero)
-    vcopy   mxc1f, mxc0f
-    ldv     mxc1f,    (mvpMatrix + 40)($zero)
-    vcopy   mxc3f, mxc2f
-    ldv     mxc3f,    (mvpMatrix + 56)($zero)
-    ldv     mxc0i[8], (mvpMatrix +  0)($zero)
-    ldv     mxc2i[8], (mvpMatrix + 16)($zero)
+    lqv     mxr0i,    (mvpMatrix +  0)($zero)
+    lqv     mxr2i,    (mvpMatrix + 16)($zero)
+    lqv     mxr0f,    (mvpMatrix + 32)($zero)
+    lqv     mxr2f,    (mvpMatrix + 48)($zero)
+    vcopy   mxr1i, mxr0i
+    ldv     mxr1i,    (mvpMatrix +  8)($zero)
+    vcopy   mxr3i, mxr2i
+    ldv     mxr3i,    (mvpMatrix + 24)($zero)
+    vcopy   mxr1f, mxr0f
+    ldv     mxr1f,    (mvpMatrix + 40)($zero)
+    vcopy   mxr3f, mxr2f
+    ldv     mxr3f,    (mvpMatrix + 56)($zero)
+    ldv     mxr0i[8], (mvpMatrix +  0)($zero)
+    ldv     mxr2i[8], (mvpMatrix + 16)($zero)
     jal     load_spFx_global_values
-     ldv    mxc0f[8], (mvpMatrix + 32)($zero)
+     ldv    mxr0f[8], (mvpMatrix + 32)($zero)
     jal     while_wait_dma_busy
-     ldv    mxc2f[8], (mvpMatrix + 48)($zero)
+     ldv    mxr2f[8], (mvpMatrix + 48)($zero)
     ldv     $v20[0], (inputVtxSize * 0)(inputVtxPos) // load the position of the 1st vertex into v20's lower 8 bytes
     vmov    vFxScaleFMin[5], vFxNegScale[1]          // Finish building vFxScaleFMin
     ldv     $v20[8], (inputVtxSize * 1)(inputVtxPos) // load the position of the 2nd vertex into v20's upper 8 bytes
 
 vertices_process_pair:
     // Two verts pos in v20; multiply by MVP
-    vmudn   $v29, mxc3f, vOne[0]
+    vmudn   $v29, mxr3f, vOne[0]
     lw      $11, (inputVtxSize + 0xC)(inputVtxPos) // load the color/normal of the 2nd vertex into $11
-    vmadh   $v29, mxc3i, vOne[0]
+    vmadh   $v29, mxr3i, vOne[0]
     llv     vPairST[12], 8(inputVtxPos)            // load the texture coords of the 1st vertex into v22[12-15]
-    vmadn   $v29, mxc0f, $v20[0h]
+    vmadn   $v29, mxr0f, $v20[0h]
     move    curLight, tmpCurLight
-    vmadh   $v29, mxc0i, $v20[0h]
+    vmadh   $v29, mxr0i, $v20[0h]
     lpv     $v2[0], (ltBufOfs + 0x10)(curLight)    // First instruction of lights_dircoloraccum2 loop; load light transformed dir
-    vmadn   $v29, mxc1f, $v20[1h]
+    vmadn   $v29, mxr1f, $v20[1h]
     sw      $11, 8(inputVtxPos)                    // Move the first vertex's colors/normals into the word before the second vertex's
-    vmadh   $v29, mxc1i, $v20[1h]
+    vmadh   $v29, mxr1i, $v20[1h]
     lpv     vPairRGBATemp[0], 8(inputVtxPos)       // Load both vertex's colors/normals into v7's elements RGBARGBA or XYZAXYZA
-    vmadn   vPairMVPPosF, mxc2f, $v20[2h]          // vPairMVPPosF = MVP * vpos result frac
+    vmadn   vPairMVPPosF, mxr2f, $v20[2h]          // vPairMVPPosF = MVP * vpos result frac
     bnez    tmpCurLight, light_vtx                 // Zero if lighting disabled, pointer if enabled
-     vmadh  vPairMVPPosI, mxc2i, $v20[2h]          // vPairMVPPosI = MVP * vpos result int
+     vmadh  vPairMVPPosI, mxr2i, $v20[2h]          // vPairMVPPosI = MVP * vpos result int
     // These two instructions are repeated at the end of all the lighting codepaths,
     // since they're skipped here if lighting is being performed
     // This is the original location of INSTR 1 and INSTR 2
@@ -1824,52 +1831,52 @@ continue_light_dir_xfrm:
      addi   tmpCurLight, tmpCurLight, spFxBase - lightSize // With ltBufOfs, points at top/max light.
     sb      cmd_w0, lightsValid     // Set as valid, reusing state of w0
     /* Load MV matrix 3x3 transposed as:
-    mxc0i 00 08 10 06 08 0A 0C 0E
-    mxc1i 02 0A 12
-    mxc2i 04 0C 14
-    mxc3i 
-    mxc0f 20 28 30 26 28 2A 2C 2E
-    mxc1f 22 2A 32
-    mxc2f 24 2C 34
-    mxc3f 
-    Vector regs contain rows of the original matrix
+    mxr0i 00 08 10 06 08 0A 0C 0E
+    mxr1i 02 0A 12
+    mxr2i 04 0C 14
+    mxr3i 
+    mxr0f 20 28 30 26 28 2A 2C 2E
+    mxr1f 22 2A 32
+    mxr2f 24 2C 34
+    mxr3f 
+    Vector regs now contain columns of the original matrix
     This is computing:
     vec3_s8 origDir = light[0x8:0xA];
-    vec3_s16 newDir = transpose(mvMatrix[0:2][0:2]) * origDir;
+    vec3_s16 newDir = origDir * transpose(mvMatrix[0:2][0:2]);
     newDir /= sqrt(newDir.x**2 + newDir.y**2 + newDir.z**2); //normalize
     light[0x10:0x12] = light[0x14:0x16] = (vec3_s8)newDir;
     */
-    lqv     mxc0f,    (mvMatrix + 0x20)($zero)
-    lqv     mxc0i,    (mvMatrix + 0x00)($zero)
-    lsv     mxc1f[2], (mvMatrix + 0x2A)($zero)
-    lsv     mxc1i[2], (mvMatrix + 0x0A)($zero)
-    vmov    mxc1f[0], mxc0f[1]
-    lsv     mxc2f[4], (mvMatrix + 0x34)($zero)
-    vmov    mxc1i[0], mxc0i[1]
-    lsv     mxc2i[4], (mvMatrix + 0x14)($zero)
-    vmov    mxc2f[0], mxc0f[2]
+    lqv     mxr0f,    (mvMatrix + 0x20)($zero)
+    lqv     mxr0i,    (mvMatrix + 0x00)($zero)
+    lsv     mxr1f[2], (mvMatrix + 0x2A)($zero)
+    lsv     mxr1i[2], (mvMatrix + 0x0A)($zero)
+    vmov    mxr1f[0], mxr0f[1]
+    lsv     mxr2f[4], (mvMatrix + 0x34)($zero)
+    vmov    mxr1i[0], mxr0i[1]
+    lsv     mxr2i[4], (mvMatrix + 0x14)($zero)
+    vmov    mxr2f[0], mxr0f[2]
     // With ltBufOfs immediate add, points two lights behind lightBufferMain, i.e. lightBufferLookat.
     xfrmLtPtr equ $20
     li      xfrmLtPtr, spFxBase - 2 * lightSize
-    vmov    mxc2i[0], mxc0i[2]                   
+    vmov    mxr2i[0], mxr0i[2]                   
     lpv     $v7[0], (ltBufOfs + 0x8)(xfrmLtPtr) // Load light direction
-    vmov    mxc2f[1], mxc0f[6]
-    lsv     mxc1f[4], (mvMatrix + 0x32)($zero)
-    vmov    mxc2i[1], mxc0i[6]
-    lsv     mxc1i[4], (mvMatrix + 0x12)($zero)
-    vmov    mxc0f[1], mxc0f[4]
-    lsv     mxc0f[4], (mvMatrix + 0x30)($zero)
-    vmov    mxc0i[1], mxc0i[4]
-    lsv     mxc0i[4], (mvMatrix + 0x10)($zero)
+    vmov    mxr2f[1], mxr0f[6]
+    lsv     mxr1f[4], (mvMatrix + 0x32)($zero)
+    vmov    mxr2i[1], mxr0i[6]
+    lsv     mxr1i[4], (mvMatrix + 0x12)($zero)
+    vmov    mxr0f[1], mxr0f[4]
+    lsv     mxr0f[4], (mvMatrix + 0x30)($zero)
+    vmov    mxr0i[1], mxr0i[4]
+    lsv     mxr0i[4], (mvMatrix + 0x10)($zero)
 @@loop:
-    vmudn   $v29, mxc1f, $v7[1]         // light y direction (fractional)
-    vmadh   $v29, mxc1i, $v7[1]         // light y direction (integer)
-    vmadn   $v29, mxc0f, $v7[0]         // light x direction (fractional)
+    vmudn   $v29, mxr1f, $v7[1]         // light y direction (fractional)
+    vmadh   $v29, mxr1i, $v7[1]         // light y direction (integer)
+    vmadn   $v29, mxr0f, $v7[0]         // light x direction (fractional)
     spv     $v15[0], (ltBufOfs + 0x10)(xfrmLtPtr) // Store transformed light direction; first loop is garbage
-    vmadh   $v29, mxc0i, $v7[0]         // light x direction (integer)
+    vmadh   $v29, mxr0i, $v7[0]         // light x direction (integer)
     lw      $12, (ltBufOfs + 0x10)(xfrmLtPtr) // Reload transformed light direction
-    vmadn   $v29, mxc2f, $v7[2]         // light z direction (fractional)
-    vmadh   $v29, mxc2i, $v7[2]         // light z direction (integer)
+    vmadn   $v29, mxr2f, $v7[2]         // light z direction (fractional)
+    vmadh   $v29, mxr2i, $v7[2]         // light z direction (integer)
     // Square the low 32 bits of each accumulator element
     vreadacc $v11, ACC_MIDDLE           // read the middle (bits 16..31) of the accumulator elements into v11
     sw      $12, (ltBufOfs + 0x14)(xfrmLtPtr) // Store duplicate of transformed light direction
@@ -1972,53 +1979,52 @@ return_from_point_lights:
      vmulf  $v21, vPairNX, $v2[0h]            // First instruction of texgen, vertex normal X * last transformed dir
 
 lights_loadmtxdouble: // curMatrix is either positive mvMatrix or negative mvpMatrix
-    /* Load matrix as follows, drawn like math format (translation = col on right):
-      Integer part   Fractional part
-     c0i c1i c2i c3i c0f c1f c2f c3f
-    E v8  v9 v10 v11 v12 v13 v14 v15     (Example data)
-    0 00  08  10  18  20  28  30  38     Xscl Rot  Rot  Xpos
-    1 02  0A  12  1A  22  2A  32  3A     Rot  Yscl Rot  Ypos
-    2 04  0C  14  1C  24  2C  34  3C     Rot  Rot  Zscl Zpos
-    3 06  0E  16  1E  26  2E  36  3E     0    0    0    1
-    4 00  08  10  18  20  28  30  38
-    5 02  0A  12  1A  22  2A  32  3A
-    6 04  0C  14  1C  24  2C  34  3C
-    7 06  0E  16  1E  26  2E  36  3E
-    Vector regs contain columns of original matrix (v11/v15 have translations)
+    /* Load MVP matrix as follows--note that translation is in the bottom row,
+    not the right column.
+        Elem   0   1   2   3   4   5   6   7      (Example data)
+    I r0i v8  00  02  04  06  00  02  04  06      Xscl Rot  Rot   0
+    I r1i v9  08  0A  0C  0E  08  0A  0C  0E      Rot  Yscl Rot   0
+    I r2i v10 10  12  14  16  10  12  14  16      Rot  Rot  Zscl  0
+    I r3i v11 18  1A  1C  1E  18  1A  1C  1E      Xpos Ypos Zpos  1
+    F r0f v12 20  22  24  26  20  22  24  26
+    F r1f v13 28  2A  2C  2E  28  2A  2C  2E
+    F r2f v14 30  32  34  36  30  32  34  36
+    F r3f v15 38  3A  3C  3E  38  3A  3C  3E
+    Vector regs contain rows of original matrix (v11/v15 have translations)
     */
-    lqv     mxc0i[0], 0x0000(curMatrix) // cols 0 and 1, int
-    lqv     mxc2i[0], 0x0010(curMatrix) // cols 2 and 3, int
-    lqv     mxc0f[0], 0x0020(curMatrix) // cols 0 and 1, frac
-    lqv     mxc2f[0], 0x0030(curMatrix) // cols 2 and 3, frac
-    vcopy   mxc1i, mxc0i
-    ldv     mxc1i[0], 0x0008(curMatrix) // col 1 int twice
-    vcopy   mxc3i, mxc2i
-    ldv     mxc3i[0], 0x0018(curMatrix) // col 3 int twice
-    vcopy   mxc1f, mxc0f
-    ldv     mxc1f[0], 0x0028(curMatrix) // col 1 frac twice
-    vcopy   mxc3f, mxc2f
-    ldv     mxc3f[0], 0x0038(curMatrix) // col 3 frac twice
-    ldv     mxc0i[8], 0x0000(curMatrix) // col 0 int twice
-    ldv     mxc2i[8], 0x0010(curMatrix) // col 2 int twice
-    ldv     mxc0f[8], 0x0020(curMatrix) // col 0 frac twice
+    lqv     mxr0i[0], 0x0000(curMatrix) // rows 0 and 1, int
+    lqv     mxr2i[0], 0x0010(curMatrix) // rows 2 and 3, int
+    lqv     mxr0f[0], 0x0020(curMatrix) // rows 0 and 1, frac
+    lqv     mxr2f[0], 0x0030(curMatrix) // rows 2 and 3, frac
+    vcopy   mxr1i, mxr0i
+    ldv     mxr1i[0], 0x0008(curMatrix) // row 1 int twice
+    vcopy   mxr3i, mxr2i
+    ldv     mxr3i[0], 0x0018(curMatrix) // row 3 int twice
+    vcopy   mxr1f, mxr0f
+    ldv     mxr1f[0], 0x0028(curMatrix) // row 1 frac twice
+    vcopy   mxr3f, mxr2f
+    ldv     mxr3f[0], 0x0038(curMatrix) // row 3 frac twice
+    ldv     mxr0i[8], 0x0000(curMatrix) // row 0 int twice
+    ldv     mxr2i[8], 0x0010(curMatrix) // row 2 int twice
+    ldv     mxr0f[8], 0x0020(curMatrix) // row 0 frac twice
     jr      $ra
-     ldv    mxc2f[8], 0x0030(curMatrix) // col 2 frac twice
+     ldv    mxr2f[8], 0x0030(curMatrix) // row 2 frac twice
 
 lights_loadmvtranspose3x3double:
     /* Load 3x3 portion of MV matrix in transposed orientation
-    Vector regs contain rows of original matrix; elems 3,7 not modified
+    Vector regs now contain columns of original matrix; elems 3,7 not modified
     Importantly, v28 elements 3 and 7 contain vertices 1 and 2 alpha.
-    This also clobbers v31 and v30, except elements 3 and 7, which have to be
+    This also clobbers v31 and v30 (except elements 3 and 7), which have to be
     restored after lighting.
-      E 0   1   2   3   4   5   6   7
-     v4 00  08  10  -   00  08  10  - 
-    v21 02  0A  12  -   02  0A  12  - 
-    v30 04  0C  14  -   04  0C  14  - 
-    XXX -   -   -   -   -   -   -   - 
-     v3 20  28  30  -   20  28  30  - 
-    v28 22  2A  32 V1A  22  2A  32 V2A
-    v31 24  2C  34  -   24  2C  34  - 
-    XXX -   -   -   -   -   -   -   - 
+            E 0   1   2   3   4   5   6   7
+    I c0i  v4 00  08  10  -   00  08  10  - 
+    I c1i v21 02  0A  12  -   02  0A  12  - 
+    I c2i v30 04  0C  14 CNST 04  0C  14 CNST
+    I XXX XXX -   -   -   -   -   -   -   - 
+    F c0f  v3 20  28  30  -   20  28  30  - 
+    F c1f v28 22  2A  32 V1A  22  2A  32 V2A
+    F c2f v31 24  2C  34 CNST 24  2C  34 CNST
+    F XXX XXX -   -   -   -   -   -   -   - 
     */
     lsv     mvTc0i[0], (mvMatrix)($zero)
     lsv     mvTc0f[0], (mvMatrix + 0x20)($zero)
@@ -2064,16 +2070,16 @@ point_lighting_main:
     bltzal  curMatrix, lights_loadmvtranspose3x3double // branch if curMatrix is MVP; need MV and MV^T
      ldv    $v20[0], 0x0010(inputVtxPos) // Load v1 pos to lower 4 elements of v20
     // Transform input vertices by MV; puts them in camera space
-    vmudn   $v2, mxc3f, vOne[0]          // 1 * translation column
+    vmudn   $v2, mxr3f, vOne[0]          // 1 * translation row
     ldv     $v29[0], (ltBufOfs + 0x8)(curLight) // Load light pos (shorts, same mem as non-transformed light dir) into lower 4 elements
-    vmadh   $v2, mxc3i, vOne[0]          // 1 * translation column
-    vmadn   $v2, mxc0f, $v20[0h]
-    vmadh   $v2, mxc0i, $v20[0h]
-    vmadn   $v2, mxc1f, $v20[1h]
+    vmadh   $v2, mxr3i, vOne[0]          // 1 * translation row
+    vmadn   $v2, mxr0f, $v20[0h]
+    vmadh   $v2, mxr0i, $v20[0h]
+    vmadn   $v2, mxr1f, $v20[1h]
     ldv     $v29[8], (ltBufOfs + 0x8)(curLight) // Load same light pos into upper 4
-    vmadh   $v2, mxc1i, $v20[1h]
-    vmadn   $v2, mxc2f, $v20[2h]
-    vmadh   $v2, mxc2i, $v20[2h]
+    vmadh   $v2, mxr1i, $v20[1h]
+    vmadn   $v2, mxr2f, $v20[2h]
+    vmadh   $v2, mxr2i, $v20[2h]
     vsub    $v20, $v29, $v2              // v20 = light pos - camera space verts pos
     vmrg    $v29, $v20, vZero[0]         // Set elems 3 and 7 to 0
     vmudh   $v2, $v29, $v29              // Squared
