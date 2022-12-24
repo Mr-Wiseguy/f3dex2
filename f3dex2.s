@@ -626,10 +626,10 @@ load_overlay1_init:
 
     jal     load_overlay_and_enter  // load overlay 1 and enter
      move   $12, $ra                // set up the return address, since load_overlay_and_enter returns to $12
-
-// Overlays 0 and 1 overwrite everything up to this point (2.08 versions overwrite up to the previous .align 8)
-.align 8
+    // This return should be such that it coincides with displaylist_dma so no code from overlay 1 is ran, ensure that
+    // Overlay01End_ remains aligned to 8 bytes
 Overlay01End_:
+// Overlays 0 and 1 overwrite everything up to this point (2.08 versions overwrite up to the previous .align 8)
 
 displaylist_dma: // loads inputBufferLength bytes worth of displaylist data via DMA into inputBuffer
     li      $19, inputBufferLength - 1  // set the DMA length
@@ -801,9 +801,9 @@ ovl0_04001284:
 ovl0_0400129C:
     jr $ra
      nop
-    nop
 .endif
 
+.align 8
 Overlay23LoadAddress:
 
 // Overlay 3 registers
