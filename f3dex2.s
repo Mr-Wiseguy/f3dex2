@@ -1868,10 +1868,10 @@ do_movemem:
     srl     $2, cmd_w0, 5                                // Left shifts the index by 5 (which is then added to the value read from the movemem table)
     lhu     $ra, (movememHandlerTable - (G_POPMTX | 0xFF00))($12)  // Loads the return address from movememHandlerTable based on command byte
     j       dma_read_write
-G_SETOTHERMODE_H_handler:
+G_SETOTHERMODE_H_handler: // These handler labels must be 4 bytes apart for the code below to work
      add    $20, $20, $2
 G_SETOTHERMODE_L_handler:
-    lw      $3, -0x1074($11)
+    lw      $3, (othermode0 - G_SETOTHERMODE_H_handler)($11) // resolves to othermode0 or othermode1 based on which handler was jumped to
     lui     $2, 0x8000
     srav    $2, $2, cmd_w0
     srl     $1, cmd_w0, 8
@@ -1879,7 +1879,7 @@ G_SETOTHERMODE_L_handler:
     nor     $2, $2, $zero
     and     $3, $3, $2
     or      $3, $3, cmd_w1
-    sw      $3, -0x1074($11)
+    sw      $3, (othermode0 - G_SETOTHERMODE_H_handler)($11)
     lw      cmd_w0, otherMode0
     j       G_RDP_handler
      lw     cmd_w1, otherMode1
