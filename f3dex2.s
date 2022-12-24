@@ -188,6 +188,7 @@ G_MWO_CLIP_RPY:
 .endif
 
 // 0x1B0: constants for register $v31
+.align 0x10 // loaded with lqv
 v31Value:
     .dh 0xFFFF // 65535
     .dh 0x0004 // 4
@@ -199,6 +200,7 @@ v31Value:
     .dh 0x7FFF // 32767
 
 // 0x1C0: constants for register $v30
+.align 0x10 // loaded with lqv
 v30Value:
     .dh 0x7FFC
     .dh 0x1400
@@ -218,6 +220,7 @@ v30Value:
     .dh 0x0020
 .endif
 
+.align 0x10 // loaded with lqv
 linearGenerateCoefficients:
     .dh 0xC000
     .dh 0x44D3
