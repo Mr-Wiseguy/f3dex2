@@ -595,7 +595,7 @@ wait_dpc_start_valid:
     lw $12, OSTask + OSTask_flags
     addi $1, $zero, SP_CLR_SIG2 | SP_CLR_SIG1
     mtc0 $1, SP_STATUS
-    andi $12, $12, 1
+    andi $12, $12, OS_TASK_YIELDED
     beqz $12, f3dzex_xbus_0000111C
      sw $zero, OSTask + OSTask_flags
     j load_overlay1_init
