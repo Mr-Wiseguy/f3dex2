@@ -572,7 +572,7 @@ rdpCmdBufEnd equ $22
 
 // Initialization routines
 // Everything up until displaylist_dma will get overwritten by ovl0 and/or ovl1
-start:
+start: // This is at IMEM 0x1080, not the start of IMEM
 .if UCODE_TYPE == TYPE_F3DZEX && UCODE_ID < 2
     vor     vZero, $v16, $v16 // Sets vZero to $v16
 .else
@@ -867,7 +867,7 @@ vPairRGBATemp equ $v7
 
 // Jump here to do lighting. If overlay 3 is loaded (this code), loads and jumps
 // to overlay 2 (same address as right here).
-ovl23_lighting_entrypoint:
+ovl23_lighting_entrypoint_copy:     // same IMEM address as ovl23_lighting_entrypoint
     li      $11, overlayInfo2       // set up a load for overlay 2
     j       load_overlay_and_enter  // load overlay 2
      li     $12, ovl23_lighting_entrypoint  // set the return address
@@ -1952,7 +1952,7 @@ ovl1_end:
 .headersize ovl23_start - orga()
 
 ovl2_start:
-ovl23_lighting_entrypoint_copy:         // same IMEM address as ovl23_lighting_entrypoint
+ovl23_lighting_entrypoint:
     lbu     $11, lightsValid
     j       continue_light_dir_xfrm
      lbu    tmpCurLight, numLightsx18
