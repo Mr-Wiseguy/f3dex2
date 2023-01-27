@@ -667,15 +667,24 @@ calculate_overlay_addrs:
 load_overlay1_init:
     li      $11, overlayInfo1   // set up loading of overlay 1
 
-.align 8 // Not clear why this was placed here rather than two instructions down
+// Make room for overlays 0 and 1. Normally, overlay 1 ends exactly at ovl01_end,
+// and overlay 0 is much shorter, but if things are modded this constraint must be met.
+// The 0x88 is because the file starts 0x80 into IMEM, and the overlays can extend 8
+// bytes over the next two instructions as well.
+.orga max(orga(), max(ovl0_end - ovl0_start, ovl1_end - ovl1_start) - 0x88)
 
+// Also needs to be aligned so that ovl01_end is a DMA word, in case ovl0 and ovl1
+// are shorter than the code above and the code above is an odd number of instructions.
+.align 8
+
+// Unnecessarily clever code. The jal sets $ra to the address of the next instruction,
+// which is displaylist_dma. So the padding has to be before these two instructions,
+// so that this is immediately before displaylist_dma; otherwise the return address
+// will be in the last few instructions of overlay 1. However, this was unnecessary--
+// it could have been a jump and then `addiu $12, $zero, displaylist_dma`.
     jal     load_overlay_and_enter  // load overlay 1 and enter
      move   $12, $ra                // set up the return address, since load_overlay_and_enter returns to $12
 
-.align 8 // No effect because of the previous .align 8 two instructions up, but this is where it should actually be
-// Make room for overlays 0 and 1. Normally, overlay 1 ends at exactly this address,
-// and overlay 0 is much shorter, but if things are modded this constraint must be met.
-.orga max(orga(), max(ovl0_end - ovl0_start, ovl1_end - ovl1_start) - 0x80)
 ovl01_end:
 // Overlays 0 and 1 overwrite everything up to this point (2.08 versions overwrite up to the previous .align 8)
 
