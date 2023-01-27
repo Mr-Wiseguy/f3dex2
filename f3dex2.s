@@ -42,40 +42,47 @@ ACC_LOWER equ 2
     vsar dst, dst, dst[N]
 .endmacro
 
-// There are two different memory spaces for the overlays: (a) IMEM and (b) the
-// microcode file (which, plus an offset, is also the location in DRAM).
-// 
-// A label marks both an IMEM addresses and a file address, but evaluating the
-// label in an integer context (e.g. in a branch) gives the IMEM address.
-// `orga(your_label)` gets the file address of the label.
-// The IMEM address can be set with `.headersize desired_imem_addr - orga()`.
-// The file address can be set with `.org`.
-// 
-// In IMEM, the whole microcode is organized as (each row is the same address):
-// 
-// start               Overlay 0          Overlay 1
-// (initialization)    (End task)         (More cmd handlers)
-// 
-// Many command
-// handlers
-// 
-// Overlay 2           Overlay 3
-// (Lighting)          (Clipping)
-// 
-// Vertex and
-// tri handlers
-// 
-// DMA code
-//
-// In the file, the microcode is organized as:
-// start
-// Many command handlers
-// Overlay 3
-// Vertex and tri handlers
-// DMA code
-// Overlay 0
-// Overlay 1
-// Overlay 2
+/*
+There are two different memory spaces for the overlays: (a) IMEM and (b) the
+microcode file (which, plus an offset, is also the location in DRAM).
+
+A label marks both an IMEM addresses and a file address, but evaluating the
+label in an integer context (e.g. in a branch) gives the IMEM address.
+`orga(your_label)` gets the file address of the label, and `.orga` sets the
+file address.
+`.headersize`, as well as the value after `.create`, sets the difference
+between IMEM addresses and file addresses, so you can set the IMEM address
+with `.headersize desired_imem_addr - orga()`.
+
+In IMEM, the whole microcode is organized as (each row is the same address):
+
+0x80 space             |                |
+for boot code       Overlay 0       Overlay 1
+                      (End          (More cmd 
+start                 task)         handlers)
+(initialization)       |                |
+
+Many command
+handlers
+
+Overlay 2           Overlay 3
+(Lighting)          (Clipping)
+
+Vertex and
+tri handlers
+
+DMA code
+
+In the file, the microcode is organized as:
+start (file addr 0x0 = IMEM 0x1080)
+Many command handlers
+Overlay 3
+Vertex and tri handlers
+DMA code (end of this = IMEM 0x2000 = file 0xF80)
+Overlay 0
+Overlay 1
+Overlay 2
+*/
 
 // Overlay table data member offsets
 overlay_load equ 0x0000
@@ -321,8 +328,8 @@ lightBufferLookat:
 // Then there are the main 8 lights. This is between one and seven directional /
 // point (if built with this enabled) lights, plus the ambient light at the end.
 // Zero lights is not supported, and is encoded as one light with black color
-// (does not affect the result). Once there is one point light, the rest (until
-// ambient) are also assumed to be point lights.
+// (does not affect the result). Directional and point lights can be mixed in
+// any order; ambient is always at the end.
 lightBufferMain:
     .fill (8 * lightSize)
 // Code uses pointers relative to spFxBase, with immediate offsets, so that
@@ -660,12 +667,15 @@ calculate_overlay_addrs:
 load_overlay1_init:
     li      $11, overlayInfo1   // set up loading of overlay 1
 
-.align 8
+.align 8 // Not clear why this was placed here rather than two instructions down
 
     jal     load_overlay_and_enter  // load overlay 1 and enter
      move   $12, $ra                // set up the return address, since load_overlay_and_enter returns to $12
-    // This return should be such that it coincides with displaylist_dma so no code from overlay 1 is ran, ensure that
-    // ovl01_end remains aligned to 8 bytes
+
+.align 8 // No effect because of the previous .align 8 two instructions up, but this is where it should actually be
+// Make room for overlays 0 and 1. Normally, overlay 1 ends at exactly this address,
+// and overlay 0 is much shorter, but if things are modded this constraint must be met.
+.orga max(orga(), max(ovl0_end - ovl0_start, ovl1_end - ovl1_start) - 0x80)
 ovl01_end:
 // Overlays 0 and 1 overwrite everything up to this point (2.08 versions overwrite up to the previous .align 8)
 
@@ -1791,7 +1801,7 @@ ovl0_xbus_wait_for_rdp_2:
 ovl0_end:
 
 .if ovl0_end > ovl01_end
-    .error "Overlay 0 too large"
+    .error "Automatic resizing for overlay 0 failed"
 .endif
 
 // overlay 1 (0x170 bytes loaded into 0x1000)
@@ -1936,7 +1946,7 @@ G_SETOTHERMODE_L_handler:
 ovl1_end:
 
 .if ovl1_end > ovl01_end
-    .error "Overlay 1 too large"
+    .error "Automatic resizing for overlay 1 failed"
 .endif
 
 .headersize ovl23_start - orga()
