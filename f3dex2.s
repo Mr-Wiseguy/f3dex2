@@ -203,7 +203,7 @@ spFxBase:
 spFxBaseReg equ $13
 
 // 0x0180-0x1B0: clipping values
-clipRatio:
+clipRatio: // This is an array of 6 doublewords
     .dw 0x00010000
 G_MWO_CLIP_RNX:
     .dw 0x00000002
@@ -488,7 +488,7 @@ clipStack:
     .dw 0x00000000
     .dw 0x00000000
 
-lbl_03F8:
+clipMaskList:
     .dw 0x00100000
     .dw 0x00200000
     .dw 0x10000000
@@ -518,15 +518,20 @@ inputBufferLength equ 0xA8
     .skip inputBufferLength
 inputBufferEnd:
 
-// 0x09C8-0x09D0: ??
-    .skip 8
+// 0x09C9-0x0BA8: Space for temporary verts for clipping code
+clipTempVerts:
+clipTempVertsCount equ 12 // Up to 2 temp verts can be created for each of the 6 clip conditions.
+clipTempVertsSize equ clipTempVertsCount * vtxSize
 
-// 0x09D0 - 0x0A10: Temp matrix for G_MTX multiplication mode
+// 0x09C8-0x09D0
+    .skip 0x8 // should be .align 0x10, but this makes armips continue the output file to here
+
+// 0x09D0-0x0A10: Temp matrix for G_MTX multiplication mode, overlaps with clipTempVerts
 tempMatrix:
     .skip 0x40
 
-// 0xA50-0xBA8: ??
-.skip 0x198
+// 0x0A50-0x0BA8: Remainder of clipTempVerts
+    .skip clipTempVertsSize - (. - clipTempVerts)
 
 RDP_CMD_BUFSIZE equ 0x158
 RDP_CMD_BUFSIZE_EXCESS equ 0xB0 // Maximum size of an RDP triangle command
@@ -562,7 +567,9 @@ OSTask:
 // Global registers
 secondVtxPos equ $8
 outputVtxPos equ $15
-clipStackIdx equ $18
+clipFlags equ $16
+clipStackBot equ $17
+clipStackSelect equ $18
 rdpCmdBufEnd equ $22
 rdpCmdBufPtr equ $23
 cmd_w1 equ $24
@@ -768,7 +775,7 @@ G_RDPHALF_2_handler:
     ldv     $v29[0], (texrectWord1)($zero)
     lw      cmd_w0, rdpHalf1Val                 // load the RDPHALF1 value into w0
     addi    rdpCmdBufPtr, rdpCmdBufPtr, 8
-    sdv     $v29[0], -8(rdpCmdBufPtr)           // move textrectWord1 to lbl_03F8
+    sdv     $v29[0], -8(rdpCmdBufPtr)
 G_RDP_handler:
     sw      cmd_w1, 4(rdpCmdBufPtr)         // Add the second word of the command to the RDP command buffer
 G_SYNC_handler:
@@ -875,6 +882,7 @@ ovl23_start:
 ovl3_start:
 
 clipStackEnd equ $21
+clipMaskIdx equ $5
 
 vPairRGBATemp equ $v7
 
@@ -890,48 +898,50 @@ ovl23_lighting_entrypoint_copy:     // same IMEM address as ovl23_lighting_entry
 ovl23_clipping_entrypoint:
     move    savedRA, $ra
 ovl3_clipping_nosavera:
-    la      $5, 0x0014
-    la      clipStackIdx, 6
+    la      clipMaskIdx, 0x0014
+    la      clipStackSelect, 6
     la      outputVtxPos, inputBufferEnd
     // Store addresses of current three verts to the stack
-    sh      $1, (clipStack - 6 + 0)(clipStackIdx)
-    sh      $2, (clipStack - 6 + 2)(clipStackIdx)
-    sh      $3, (clipStack - 6 + 4)(clipStackIdx)
-    sh      $zero, (clipStack)(clipStackIdx)
+    sh      $1, (clipStack - 6 + 0)(clipStackSelect)
+    sh      $2, (clipStack - 6 + 2)(clipStackSelect)
+    sh      $3, (clipStack - 6 + 4)(clipStackSelect)
+    sh      $zero, (clipStack)(clipStackSelect) // Zero to mark end of stack
     lw      savedNearclip, nearclipValue
-f3dzex_00001308:
-    lw      $9, (lbl_03F8)($5)
-    lw      $16, 0x0024($3)
-    and     $16, $16, $9
-    addi    $17, clipStackIdx, -6
-    xori    clipStackIdx, clipStackIdx, 0x1C
-    addi    clipStackEnd, clipStackIdx, -6
-f3dzex_00001320:
-    lhu     $2, (clipStack)($17)
-    addi    $17, $17, 0x0002
-    beqz    $2, f3dzex_000014A8
-     lw     $11, 0x0024($2)
-    and     $11, $11, $9
-    beq     $11, $16, f3dzex_00001494
-     move   $16, $11
-    beqz    $16, f3dzex_0000134C
-     move   $19, $2
-    move    $19, $3
-    move    $3, $2
-f3dzex_0000134C:
-    sll     $11, $5, 1
-    ldv     $v2[0], 0x0180($11)
-    ldv     $v4[0], 0x0008($19)
-    ldv     $v5[0], 0x0000($19)
-    ldv     $v6[0], 0x0008($3)
-    ldv     $v7[0], 0x0000($3)
+clipping_masklooptop:
+    lw      $9, (clipMaskList)(clipMaskIdx)
+    lw      clipFlags, VTX_FLAGS($3)    // Load flags for third vertex
+    and     clipFlags, clipFlags, $9          // Look at only the flag for the current clip mask
+    addi    clipStackBot,    clipStackSelect, -6 // Start at bottom of stack
+    xori    clipStackSelect, clipStackSelect, 6 ^ 0x1A // changes between 6 and 1A
+    addi    clipStackEnd,    clipStackSelect, -6
+clipping_stacklooptop:
+    lhu     $2, (clipStack)(clipStackBot)  // Read second vertex from bottom of stack
+    addi    clipStackBot, clipStackBot, 0x0002 // Increment bottom of stack
+    beqz    $2, clipping_nextmask // If vertex is 0, done with stack
+     lw     $11, VTX_FLAGS($2)    // Load flags for second vertex
+    and     $11, $11, $9          // Same mask for current clip mask
+    beq     $11, clipFlags, clipping_nextstack // Both set or both clear
+     move   clipFlags, $11
+    beqz    clipFlags, clipping_skipswap23 // Second vertex flag is cleared (and third is set)
+     move   $19, $2              // Second vertex addr in $19
+    move    $19, $3              // Third vertex addr in $19
+    move    $3, $2               // Second vertex addr in $3
+clipping_skipswap23: // After possible swap, $19 = vtx with flag cleared, $3 = vtx with flag set
+    // Interpolate between these two vertices; create a new vertex which is on the
+    // clipping boundary (e.g. at the screen edge)
+    sll     $11, clipMaskIdx, 1  // clipMaskIdx counts by 4, so this is now by 8
+    ldv     $v2[0], clipRatio($11) // Load four shorts holding clip ratio for this clip condition
+    ldv     $v4[0], VTX_FRAC_VEC($19) // Vtx with flag cleared, frac pos
+    ldv     $v5[0], VTX_INT_VEC ($19) // Vtx with flag cleared, int pos
+    ldv     $v6[0], VTX_FRAC_VEC($3)  // Vtx with flag set, frac pos
+    ldv     $v7[0], VTX_INT_VEC ($3)  // Vtx with flag set, int pos
     vmudh   $v3, $v2, $v31[0]
     vmudn   $v8, $v4, $v2
     vmadh   $v9, $v5, $v2
     vmadn   $v10, $v6, $v3
     vmadh   $v11, $v7, $v3
     vaddc   $v8, $v8, $v8[0q]
-    lqv     $v25[0], (linearGenerateCoefficients)($zero)
+    lqv     $v25[0], (linearGenerateCoefficients)($zero) // Used just to load the value 0x0002
     vadd    $v9, $v9, $v9[0q]
     vaddc   $v10, $v10, $v10[0q]
     vadd    $v11, $v11, $v11[0q]
@@ -948,9 +958,9 @@ f3dzex_0000134C:
     vrcpl   $v2[3], $v10[3]
     vrcph   $v3[3], vZero[0]
 .if (UCODE_IS_F3DEX2_204H) // Only in F3DEX2 2.04H
-    vabs    $v29, $v11, $v25[3]
+    vabs    $v29, $v11, $v25[3] // 0x0002
 .else
-    vabs    $v29, $v29, $v25[3]
+    vabs    $v29, $v29, $v25[3] // 0x0002
 .endif
     vmudn   $v2, $v2, $v29[3]
     vmadh   $v3, $v3, $v29[3]
@@ -974,13 +984,13 @@ f3dzex_0000134C:
     vmadn   $v12, $v12, $v11
     vmadh   $v13, $v13, $v11
     vmudl   $v29, $v8, $v12
-    luv     $v26[0], 0x0010($3)
+    luv     $v26[0], VTX_COLOR_VEC($3)  // Vtx with flag set, RGBA
     vmadm   $v29, $v9, $v12
-    llv     $v26[8], 0x0014($3)
+    llv     $v26[8], VTX_TC_VEC   ($3)  // Vtx with flag set, ST
     vmadn   $v10, $v8, $v13
-    luv     $v25[0], 0x0010($19)
+    luv     $v25[0], VTX_COLOR_VEC($19) // Vtx with flag cleared, RGBA
     vmadh   $v11, $v9, $v13
-    llv     $v25[8], 0x0014($19)
+    llv     $v25[8], VTX_TC_VEC   ($19) // Vtx with flag cleared, RGBA
     vmudl   $v29, $v10, $v2[3]
     vmadm   $v11, $v11, $v2[3]
     vmadn   $v10, $v10, vZero[0]
@@ -997,13 +1007,15 @@ f3dzex_0000134C:
     vmadn   vPairMVPPosF, vZero, vZero[0]
     vmudm   $v29, $v26, $v10[3]
     vmadm   vPairST, $v25, $v2[3]
-    li      $7, 0x0000
-    li      $1, 0x0002
-    sh      outputVtxPos, (clipStack)(clipStackEnd)
+    li      $7, 0x0000 // Set no fog
+    li      $1, 0x0002 // Set vertex count to 1, so will only write one
+    sh      outputVtxPos, (clipStack)(clipStackEnd) // New vertex will be stored here
     j       load_spfx_global_values // Goes to load_spfx_global_values, then to vertices_store, then
      li   $ra, vertices_store + 0x8000 // comes back here, via bltz $ra, clipping_after_vtxwrite
 
 clipping_after_vtxwrite:
+// outputVtxPos has been incremented by 2 * vtxSize
+// Store last vertex attributes which were skipped by the early return
 .if (UCODE_IS_F3DEX2_204H)
     sdv     $v25[0],    (VTX_SCR_VEC   - 2 * vtxSize)(outputVtxPos)
 .else
@@ -1015,22 +1027,22 @@ clipping_after_vtxwrite:
 .if !(UCODE_IS_F3DEX2_204H) // Not in F3DEX2 2.04H
     ssv     $v3[4],     (VTX_Z         - 2 * vtxSize)(outputVtxPos)
 .endif
-    addi    outputVtxPos, outputVtxPos, -vtxSize
+    addi    outputVtxPos, outputVtxPos, -vtxSize // back by 1 vtx so we are actually 1 ahead of where started
     addi    clipStackEnd, clipStackEnd, 2
-f3dzex_00001494:
-    bnez    $16, f3dzex_00001320
+clipping_nextstack:
+    bnez    clipFlags, clipping_stacklooptop
      move   $3, $2
     sh      $3, (clipStack)(clipStackEnd)
-    j       f3dzex_00001320
+    j       clipping_stacklooptop
      addi   clipStackEnd, clipStackEnd, 2
 
-f3dzex_000014A8:
-    sub     $11, clipStackEnd, clipStackIdx
+clipping_nextmask:
+    sub     $11, clipStackEnd, clipStackSelect
     bltz    $11, clipping_done
      sh     $zero, (clipStack)(clipStackEnd)
     lhu     $3, (clipStack - 2)(clipStackEnd)
-    bnez    $5, f3dzex_00001308
-     addi   $5, $5, -0x0004
+    bnez    clipMaskIdx, clipping_masklooptop
+     addi   clipMaskIdx, clipMaskIdx, -0x0004
     sw      $zero, nearclipValue
 clipping_draw_tris_loop:
 .if (UCODE_IS_F3DEX2_204H)
@@ -1039,11 +1051,11 @@ clipping_draw_tris_loop:
     val1 equ -0x0002
 .else
     // Draws verts in pattern like 0-1-4, 1-2-4, 2-3-4
-    reg1 equ clipStackIdx
+    reg1 equ clipStackSelect
     val1 equ 0x0002
 .endif
     // Load addresses of three verts to draw; these may be in normal vertex array or temp buffer
-    lhu     $1, (clipStack - 6)(clipStackIdx)
+    lhu     $1, (clipStack - 6)(clipStackSelect)
     lhu     $2, (clipStack - 4)(reg1)
     lhu     $3, (clipStack - 2)(clipStackEnd)
     mtc2    $1, $v2[10]               // Addresses go in vector regs too
@@ -1051,7 +1063,7 @@ clipping_draw_tris_loop:
     mtc2    $2, $v4[12]
     jal     tri_to_rdp_noinit
      mtc2   $3, $v2[14]
-    bne     clipStackEnd, clipStackIdx, clipping_draw_tris_loop
+    bne     clipStackEnd, clipStackSelect, clipping_draw_tris_loop
      addi   reg1, reg1, val1
 clipping_done:
     jr      savedRA
