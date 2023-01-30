@@ -518,7 +518,7 @@ inputBufferLength equ 0xA8
     .skip inputBufferLength
 inputBufferEnd:
 
-// 0x09C9-0x0BA8: Space for temporary verts for clipping code
+// 0x09C8-0x0BA8: Space for temporary verts for clipping code
 clipTempVerts:
 clipTempVertsCount equ 12 // Up to 2 temp verts can be created for each of the 6 clip conditions.
 clipTempVertsSize equ clipTempVertsCount * vtxSize
