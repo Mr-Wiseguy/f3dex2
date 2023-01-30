@@ -900,7 +900,7 @@ ovl23_clipping_entrypoint:
 ovl3_clipping_nosavera:
     la      clipMaskIdx, 0x0014
     la      clipStackSelect, 6
-    la      outputVtxPos, inputBufferEnd
+    la      outputVtxPos, clipTempVerts
     // Store addresses of current three verts to the stack
     sh      $1, (clipStack - 6 + 0)(clipStackSelect)
     sh      $2, (clipStack - 6 + 2)(clipStackSelect)
