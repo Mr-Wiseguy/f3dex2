@@ -1496,333 +1496,465 @@ G_TRI1_handler:
     li      $ra, run_next_DL_command     // After done with this tri, run next cmd
     sw      cmd_w0, 4(rdpCmdBufPtr)      // Put first tri indices in temp memory
 tri_to_rdp:
-    lpv     $v2[0], 0(rdpCmdBufPtr)      // Load tri indexes to vector unit for shuffling
+
+vtx_idxs equ $v2
+_0x4000 equ $v31[5]
+v0x4000 equ $v3
+
+    lpv     vtx_idxs[0], 0(rdpCmdBufPtr)      // Load tri indexes to vector unit for shuffling
     // read the three vertex indices from the stored command word
     lbu     $1, 0x0005(rdpCmdBufPtr)     // $1 = vertex 1 index
     lbu     $2, 0x0006(rdpCmdBufPtr)     // $2 = vertex 2 index
-    lbu     $3, 0x0007(rdpCmdBufPtr)     // $3 = vertex 3 index
-    vor     $v3, vZero, $v31[5]
-    lhu     $1, (vertexTable)($1) // convert vertex 1's index to its address
-    vmudn   $v4, vOne, $v31[6]    // Move address of vertex buffer to accumulator mid
-    lhu     $2, (vertexTable)($2) // convert vertex 2's index to its address
-    vmadl   $v2, $v2, $v30[1]     // Multiply vtx indices times length and add addr
-    lhu     $3, (vertexTable)($3) // convert vertex 3's index to its address
-    vmadn   $v4, vZero, vZero[0]  // Load accumulator again (addresses) to v4; need vertex 2 addr in elem 6
-    move    $4, $1                // Save original vertex 1 addr (pre-shuffle) for flat shading
-tri_to_rdp_noinit:
-    // ra is next cmd, second tri in TRI2, or middle of clipping
-    vnxor   $v5, vZero, $v31[7]     // v5 = 0x8000
-    llv     $v6[0], VTX_SCR_VEC($1) // Load pixel coords of vertex 1 into v6 (elems 0, 1 = x, y)
-    vnxor   $v7, vZero, $v31[7]     // v7 = 0x8000
-    llv     $v4[0], VTX_SCR_VEC($2) // Load pixel coords of vertex 2 into v4
-    vmov    $v6[6], $v2[5]          // elem 6 of v6 = vertex 1 addr
-    llv     $v8[0], VTX_SCR_VEC($3) // Load pixel coords of vertex 3 into v8
-    vnxor   $v9, vZero, $v31[7]     // v9 = 0x8000
-    lw      $5, VTX_CLIP($1)
-    vmov    $v8[6], $v2[7]          // elem 6 of v8 = vertex 3 addr
-    lw      $6, VTX_CLIP($2)
-    vadd    $v2, vZero, $v6[1] // v2 all elems = y-coord of vertex 1
-    lw      $7, VTX_CLIP($3)
-    vsub    $v10, $v6, $v4    // v10 = vertex 1 - vertex 2 (x, y, addr)
-    andi    $11, $5, (CLIP_NX | CLIP_NY | CLIP_PX | CLIP_PY | CLIP_FAR | CLIP_NEAR) << CLIP_SHIFT_SCRN
-    vsub    $v11, $v4, $v6    // v11 = vertex 2 - vertex 1 (x, y, addr)
-    and     $11, $6, $11
-    vsub    $v12, $v6, $v8    // v12 = vertex 1 - vertex 3 (x, y, addr)
-    and     $11, $7, $11      // If there is any screen clipping plane where all three verts are past it...
-    vlt     $v13, $v2, $v4[1] // v13 = min(v1.y, v2.y), VCO = v1.y < v2.y
-    vmrg    $v14, $v6, $v4    // v14 = v1.y < v2.y ? v1 : v2 (lower vertex of v1, v2)
-    bnez    $11, return_routine // ...whole tri is offscreen, cull.
-     lbu    $11, geometryModeLabel + 2  // Loads the geometry mode byte that contains face culling settings
-    vmudh   $v29, $v10, $v12[1] // x = (v1 - v2).x * (v1 - v3).y ... 
-    lw      $12, activeClipPlanes
-    vmadh   $v29, $v12, $v11[1] // ... + (v1 - v3).x * (v2 - v1).y = cross product = dir tri is facing
-    or      $5, $5, $6
-    vge     $v2, $v2, $v4[1]  // v2 = max(vert1.y, vert2.y), VCO = vert1.y > vert2.y
-    or      $5, $5, $7        // If any verts are past any clipping plane...
-    vmrg    $v10, $v6, $v4    // v10 = vert1.y > vert2.y ? vert1 : vert2 (higher vertex of vert1, vert2)
-    lw      $11, (gCullMagicNumbers)($11)
-    vge     $v6, $v13, $v8[1] // v6 = max(max(vert1.y, vert2.y), vert3.y), VCO = max(vert1.y, vert2.y) > vert3.y
-    mfc2    $6, $v29[0]       // elem 0 = x = cross product => lower 16 bits, sign extended
-    vmrg    $v4, $v14, $v8    // v4 = max(vert1.y, vert2.y) > vert3.y : higher(vert1, vert2) ? vert3 (highest vertex of vert1, vert2, vert3)
-    and     $5, $5, $12       // ...which is in the set of currently enabled clipping planes (scaled for XY, screen for ZW)...
-    vmrg    $v14, $v8, $v14   // v14 = max(vert1.y, vert2.y) > vert3.y : vert3 ? higher(vert1, vert2)
-    bnez    $5, ovl23_clipping_entrypoint // ...then run overlay 3 for clipping, either directly or via overlay 2 loading overlay 3.
-     add     $11, $6, $11     // Add magic number; see description at gCullMagicNumbers
-    vlt     $v6, $v6, $v2     // v6 (thrown out), VCO = max(vert1.y, vert2.y, vert3.y) < max(vert1.y, vert2.y)
-    bgez    $11, return_routine // If sign bit is clear, cull.
-     vmrg    $v2, $v4, $v10   // v2 = max(vert1.y, vert2.y, vert3.y) < max(vert1.y, vert2.y) : highest(vert1, vert2, vert3) ? highest(vert1, vert2)
-    vmrg    $v10, $v10, $v4   // v10 = max(vert1.y, vert2.y, vert3.y) < max(vert1.y, vert2.y) : highest(vert1, vert2) ? highest(vert1, vert2, vert3)
-    mfc2    $1, $v14[12]
-    vmudn   $v4, $v14, $v31[5]
-    beqz    $6, return_routine // If cross product is 0, tri is degenerate (zero area), cull.
-     vsub    $v6, $v2, $v14
-    mfc2    $2, $v2[12]
-    vsub    $v8, $v10, $v14
-    mfc2    $3, $v10[12]
-    vsub    $v11, $v14, $v2
-    lw      $6, geometryModeLabel
-    vsub    $v12, $v14, $v10
-    llv     $v13[0], VTX_INV_W_VEC($1)
-    vsub    $v15, $v10, $v2
-    llv     $v13[8], VTX_INV_W_VEC($2)
-    vmudh   $v16, $v6, $v8[0]
-    llv     $v13[12], VTX_INV_W_VEC($3)
-    vmadh   $v16, $v8, $v11[0]
-    sll     $11, $6, 10             // Moves the value of G_SHADING_SMOOTH into the sign bit
-    vreadacc $v17, ACC_UPPER
-    bgez    $11, no_smooth_shading  // Branch if G_SHADING_SMOOTH isn't set
-     vreadacc $v16, ACC_MIDDLE
-    lpv     $v18[0], VTX_COLOR_VEC($1) // Load vert color of vertex 1
-    vmov    $v15[2], $v6[0]
-    lpv     $v19[0], VTX_COLOR_VEC($2) // Load vert color of vertex 2
-    vrcp    $v20[0], $v15[1]
-    lpv     $v21[0], VTX_COLOR_VEC($3) // Load vert color of vertex 3
-    vrcph   $v22[0], $v17[1]
-    vrcpl   $v23[1], $v16[1]
-    j       shading_done
-     vrcph   $v24[1], vZero[0]
-no_smooth_shading:
-    lpv     $v18[0], VTX_COLOR_VEC($4)
-    vrcp    $v20[0], $v15[1]
-    lbv     $v18[6], VTX_COLOR_A($1)
-    vrcph   $v22[0], $v17[1]
-    lpv     $v19[0], VTX_COLOR_VEC($4)
-    vrcpl   $v23[1], $v16[1]
-    lbv     $v19[6], VTX_COLOR_A($2)
-    vrcph   $v24[1], vZero[0]
-    lpv     $v21[0], VTX_COLOR_VEC($4)
-    vmov    $v15[2], $v6[0]
-    lbv     $v21[6], VTX_COLOR_A($3)
-shading_done:
-    // Not sure what the underlying reason for this change is, perhaps a bugfix
-    // or a way to improve the fractional precision sent to the RDP.
-    // Hopefully this will become clear once tri write is documented.
-.if CFG_OLD_TRI_WRITE
-    i1 equ 7 // v30[7] is 0x0100
-    i2 equ 2 // v31[2] is 0x0008
-    i3 equ 5 // v31[5] is 0x4000
-    i4 equ 2 // v30[2] is 0x01CC
-    i5 equ 5 // v30[5] is 0x0010
-    i6 equ 6 // v30[6] is 0x0020
-    vec1 equ v31
-    vec2 equ v20
-.else
-    i1 equ 3 // v30[3] is 0x0100
-    i2 equ 7 // v30[7] is 0x0020
-    i3 equ 2 // v30[2] is 0x1000
-    i4 equ 3 // v30[3] is 0x0100
-    i5 equ 6 // v30[6] is 0x0010
-    i6 equ 7 // v30[7] is 0x0020
-    vec1 equ v30
-    vec2 equ v22
-.endif
-    vrcp    $v20[2], $v6[1]
-    vrcph   $v22[2], $v6[1]
-    lw      $5, VTX_INV_W_VEC($1)
-    vrcp    $v20[3], $v8[1]
-    lw      $7, VTX_INV_W_VEC($2)
-    vrcph   $v22[3], $v8[1]
-    lw      $8, VTX_INV_W_VEC($3)
-    // v30[i1] is 0x0100
-    vmudl   $v18, $v18, $v30[i1] // vertex color 1 >>= 8
-    lbu     $9, textureSettings1 + 3
-    vmudl   $v19, $v19, $v30[i1] // vertex color 2 >>= 8
-    sub     $11, $5, $7
-    vmudl   $v21, $v21, $v30[i1] // vertex color 3 >>= 8
-    sra     $12, $11, 31
-    vmov    $v15[3], $v8[0]
-    and     $11, $11, $12
-    vmudl   $v29, $v20, $vec1[i2]
-    sub     $5, $5, $11
-    vmadm   $v22, $v22, $vec1[i2]
-    sub     $11, $5, $8
-    vmadn   $v20, vZero, vZero[0]
-    sra     $12, $11, 31
-    vmudm   $v25, $v15, $vec1[i3]
-    and     $11, $11, $12
-    vmadn   $v15, vZero, vZero[0]
-    sub     $5, $5, $11
-    vsubc   $v4, vZero, $v4
-    sw      $5, 0x0010(rdpCmdBufPtr)
-    vsub    $v26, vZero, vZero
-    llv     $v27[0], 0x0010(rdpCmdBufPtr)
-    vmudm   $v29, $v25, $v20
-    mfc2    $5, $v17[1]
-    vmadl   $v29, $v15, $v20
-    lbu     $7, textureSettings1 + 2
-    vmadn   $v20, $v15, $v22
-    lsv     $v19[14], VTX_SCR_Z($2)
-    vmadh   $v15, $v25, $v22
-    lsv     $v21[14], VTX_SCR_Z($3)
-    vmudl   $v29, $v23, $v16
-    lsv     $v7[14], VTX_SCR_Z_FRAC($2)
-    vmadm   $v29, $v24, $v16
-    lsv     $v9[14], VTX_SCR_Z_FRAC($3)
-    vmadn   $v16, $v23, $v17
-    ori     $11, $6, G_TRI_FILL // Combine geometry mode (only the low byte will matter) with the base triangle type to make the triangle command id
-    vmadh   $v17, $v24, $v17
-    or      $11, $11, $9 // Incorporate whether textures are enabled into the triangle command id
-.if !CFG_OLD_TRI_WRITE
-    vand    $v22, $v20, $v30[5]
-.endif
-    vcr     $v15, $v15, $v30[i4]
-    sb      $11, 0x0000(rdpCmdBufPtr) // Store the triangle command id
-    vmudh   $v29, vOne, $v30[i5]
-    ssv     $v10[2], 0x0002(rdpCmdBufPtr) // Store YL edge coefficient
-    vmadn   $v16, $v16, $v30[4]     // v30[4] is 0xFFF0
-    ssv     $v2[2], 0x0004(rdpCmdBufPtr) // Store YM edge coefficient
-    vmadh   $v17, $v17, $v30[4]     // v30[4] is 0xFFF0
-    ssv     $v14[2], 0x0006(rdpCmdBufPtr) // Store YH edge coefficient
-    vmudn   $v29, $v3, $v14[0]
-    andi    $12, $5, 0x0080 // Extract the left major flag from $5
-    vmadl   $v29, $vec2, $v4[1]
-    or      $12, $12, $7 // Combine the left major flag with the level and tile from the texture settings
-    vmadm   $v29, $v15, $v4[1]
-    sb      $12, 0x0001(rdpCmdBufPtr) // Store the left major flag, level, and tile settings
-    vmadn   $v2, $vec2, $v26[1]
-    beqz    $9, no_textures // If textures are not enabled, skip texture coefficient calculation
-     vmadh  $v3, $v15, $v26[1]
-    vrcph   $v29[0], $v27[0]
-    vrcpl   $v10[0], $v27[1]
-    vadd    $v14, vZero, $v13[1q]
-    vrcph   $v27[0], vZero[0]
-    vor     $v22, vZero, $v31[7]
-    vmudm   $v29, $v13, $v10[0]
-    vmadl   $v29, $v14, $v10[0]
-    llv     $v22[0], VTX_TC_VEC($1)
-    vmadn   $v14, $v14, $v27[0]
-    llv     $v22[8], VTX_TC_VEC($2)
-    vmadh   $v13, $v13, $v27[0]
-    vor     $v10, vZero, $v31[7]
-    vge     $v29, $v30, $v30[7]
-    llv     $v10[8], VTX_TC_VEC($3)
-    vmudm   $v29, $v22, $v14[0h]
-    vmadh   $v22, $v22, $v13[0h]
-    vmadn   $v25, vZero, vZero[0]
-    vmudm   $v29, $v10, $v14[6]     // acc = (v10 * v14[6]); v29 = mid(clamp(acc))
-    vmadh   $v10, $v10, $v13[6]     // acc += (v10 * v13[6]) << 16; v10 = mid(clamp(acc))
-    vmadn   $v13, vZero, vZero[0]   // v13 = lo(clamp(acc))
-    sdv     $v22[0], 0x0020(rdpCmdBufPtr)
-    vmrg    $v19, $v19, $v22
-    sdv     $v25[0], 0x0028(rdpCmdBufPtr) // 8
-    vmrg    $v7, $v7, $v25
-    ldv     $v18[8], 0x0020(rdpCmdBufPtr) // 8
-    vmrg    $v21, $v21, $v10
-    ldv     $v5[8], 0x0028(rdpCmdBufPtr) // 8
-    vmrg    $v9, $v9, $v13
-no_textures:
-    vmudl   $v29, $v16, $v23
-    lsv     $v5[14], VTX_SCR_Z_FRAC($1)
-    vmadm   $v29, $v17, $v23
-    lsv     $v18[14], VTX_SCR_Z($1)
-    vmadn   $v23, $v16, $v24
-    lh      $1, VTX_SCR_VEC($2)
-    vmadh   $v24, $v17, $v24
-    addiu   $2, rdpCmdBufPtr, 0x20 // Increment the triangle pointer by 0x20 bytes (edge coefficients)
-    vsubc   $v10, $v9, $v5
-    andi    $3, $6, G_SHADE
-    vsub    $v9, $v21, $v18
-    sll     $1, $1, 14
-    vsubc   $v13, $v7, $v5
-    sw      $1, 0x0008(rdpCmdBufPtr)         // Store XL edge coefficient
-    vsub    $v7, $v19, $v18
-    ssv     $v3[6], 0x0010(rdpCmdBufPtr)     // Store XH edge coefficient (integer part)
-    vmudn   $v29, $v10, $v6[1]
-    ssv     $v2[6], 0x0012(rdpCmdBufPtr)     // Store XH edge coefficient (fractional part)
-    vmadh   $v29, $v9, $v6[1]
-    ssv     $v3[4], 0x0018(rdpCmdBufPtr)     // Store XM edge coefficient (integer part)
-    vmadn   $v29, $v13, $v12[1]
-    ssv     $v2[4], 0x001A(rdpCmdBufPtr)     // Store XM edge coefficient (fractional part)
-    vmadh   $v29, $v7, $v12[1]
-    ssv     $v15[0], 0x000C(rdpCmdBufPtr)    // Store DxLDy edge coefficient (integer part)
-    vreadacc $v2, ACC_MIDDLE
-    ssv     $v20[0], 0x000E(rdpCmdBufPtr)    // Store DxLDy edge coefficient (fractional part)
-    vreadacc $v3, ACC_UPPER
-    ssv     $v15[6], 0x0014(rdpCmdBufPtr)    // Store DxHDy edge coefficient (integer part)
-    vmudn   $v29, $v13, $v8[0]
-    ssv     $v20[6], 0x0016(rdpCmdBufPtr)    // Store DxHDy edge coefficient (fractional part)
-    vmadh   $v29, $v7, $v8[0]
-    ssv     $v15[4], 0x001C(rdpCmdBufPtr)    // Store DxMDy edge coefficient (integer part)
-    vmadn   $v29, $v10, $v11[0]
-    ssv     $v20[4], 0x001E(rdpCmdBufPtr)    // Store DxMDy edge coefficient (fractional part)
-    vmadh   $v29, $v9, $v11[0]
-    sll     $11, $3, 4              // Shift (geometry mode & G_SHADE) by 4 to get 0x40 if G_SHADE is set
-    vreadacc $v6, ACC_MIDDLE
-    add     $1, $2, $11             // Increment the triangle pointer by 0x40 bytes (shade coefficients) if G_SHADE is set
-    vreadacc $v7, ACC_UPPER
-    sll     $11, $9, 5              // Shift texture enabled (which is 2 when on) by 5 to get 0x40 if textures are on
-    vmudl   $v29, $v2, $v23[1]
-    add     rdpCmdBufPtr, $1, $11            // Increment the triangle pointer by 0x40 bytes (texture coefficients) if textures are on
-    vmadm   $v29, $v3, $v23[1]
-    andi    $6, $6, G_ZBUFFER       // Get the value of G_ZBUFFER from the current geometry mode
-    vmadn   $v2, $v2, $v24[1]
-    sll     $11, $6, 4              // Shift (geometry mode & G_ZBUFFER) by 4 to get 0x10 if G_ZBUFFER is set
-    vmadh   $v3, $v3, $v24[1]
-    add     rdpCmdBufPtr, rdpCmdBufPtr, $11           // Increment the triangle pointer by 0x10 bytes (depth coefficients) if G_ZBUFFER is set
-    vmudl   $v29, $v6, $v23[1]
-    vmadm   $v29, $v7, $v23[1]
-    vmadn   $v6, $v6, $v24[1]
-    sdv     $v2[0], 0x0018($2)      // Store DrDx, DgDx, DbDx, DaDx shade coefficients (fractional)
-    vmadh   $v7, $v7, $v24[1]
-    sdv     $v3[0], 0x0008($2)      // Store DrDx, DgDx, DbDx, DaDx shade coefficients (integer)
-    vmadl   $v29, $v2, $v20[3]
-    sdv     $v2[8], 0x0018($1)      // Store DsDx, DtDx, DwDx texture coefficients (fractional)
-    vmadm   $v29, $v3, $v20[3]
-    sdv     $v3[8], 0x0008($1)      // Store DsDx, DtDx, DwDx texture coefficients (integer)
-    vmadn   $v8, $v2, $v15[3]
-    sdv     $v6[0], 0x0038($2)      // Store DrDy, DgDy, DbDy, DaDy shade coefficients (fractional)
-    vmadh   $v9, $v3, $v15[3]
-    sdv     $v7[0], 0x0028($2)      // Store DrDy, DgDy, DbDy, DaDy shade coefficients (integer)
-    vmudn   $v29, $v5, vOne[0]
-    sdv     $v6[8], 0x0038($1)      // Store DsDy, DtDy, DwDy texture coefficients (fractional)
-    vmadh   $v29, $v18, vOne[0]
-    sdv     $v7[8], 0x0028($1)      // Store DsDy, DtDy, DwDy texture coefficients (integer)
-    vmadl   $v29, $v8, $v4[1]
-    sdv     $v8[0], 0x0030($2)      // Store DrDe, DgDe, DbDe, DaDe shade coefficients (fractional)
-    vmadm   $v29, $v9, $v4[1]
-    sdv     $v9[0], 0x0020($2)      // Store DrDe, DgDe, DbDe, DaDe shade coefficients (integer)
-    vmadn   $v5, $v8, $v26[1]
-    sdv     $v8[8], 0x0030($1)      // Store DsDe, DtDe, DwDe texture coefficients (fractional)
-    vmadh   $v18, $v9, $v26[1]
-    sdv     $v9[8], 0x0020($1)      // Store DsDe, DtDe, DwDe texture coefficients (integer)
-    vmudn   $v10, $v8, $v4[1]
-    beqz    $6, no_z_buffer
-     vmudn  $v8, $v8, $v30[i6]      // v30[i6] is 0x0020
-    vmadh   $v9, $v9, $v30[i6]      // v30[i6] is 0x0020
-    sdv     $v5[0], 0x0010($2)      // Store RGBA shade color (fractional)
-    vmudn   $v2, $v2, $v30[i6]      // v30[i6] is 0x0020
-    sdv     $v18[0], 0x0000($2)     // Store RGBA shade color (integer)
-    vmadh   $v3, $v3, $v30[i6]      // v30[i6] is 0x0020
-    sdv     $v5[8], 0x0010($1)      // Store S, T, W texture coefficients (fractional)
-    vmudn   $v6, $v6, $v30[i6]      // v30[i6] is 0x0020
-    sdv     $v18[8], 0x0000($1)     // Store S, T, W texture coefficients (integer)
-    vmadh   $v7, $v7, $v30[i6]      // v30[i6] is 0x0020
-    ssv     $v8[14], -0x0006(rdpCmdBufPtr)
-    vmudl   $v29, $v10, $v30[i6]    // v30[i6] is 0x0020
-    ssv     $v9[14], -0x0008(rdpCmdBufPtr)
-    vmadn   $v5, $v5, $v30[i6]      // v30[i6] is 0x0020
-    ssv     $v2[14], -0x000A(rdpCmdBufPtr)
-    vmadh   $v18, $v18, $v30[i6]    // v30[i6] is 0x0020
-    ssv     $v3[14], -0x000C(rdpCmdBufPtr)
-    ssv     $v6[14], -0x0002(rdpCmdBufPtr)
-    ssv     $v7[14], -0x0004(rdpCmdBufPtr)
-    ssv     $v5[14], -0x000E(rdpCmdBufPtr)
-    j       check_rdp_buffer_full   // eventually returns to $ra, which is next cmd, second tri in TRI2, or middle of clipping
-    ssv     $v18[14], -0x10(rdpCmdBufPtr)
+    // $3 = vertex 3 index
+    lbu     $3, 0x0007(rdpCmdBufPtr)        ::  vor     v0x4000, vZero, _0x4000 // $v3 = [0x4000, ...]
 
+v1_addr equ $1
+v2_addr equ $2
+v3_addr equ $3
+
+orig_v1_addr equ $4
+
+vtx_addrs equ $v2
+
+vtx_p1 equ $v6
+vtx_p2 equ $v4
+vtx_p3 equ $v8
+
+    // scalar path: convert each vertex's index to its address
+    lhu     v1_addr, (vertexTable)($1)      ::  vmudn   $v4, vOne, $v31[6]              // Move address of vertex buffer to accumulator mid
+    lhu     v2_addr, (vertexTable)($2)      ::  vmadl   vtx_addrs, vtx_idxs, $v30[1]    // Multiply vtx indices times length and add addr
+    lhu     v3_addr, (vertexTable)($3)      ::  vmadn   vtx_p2, vZero, vZero[0]         // Load accumulator again (addresses) to v4; need vertex 2 addr in elem 6
+    // Save original vertex 1 addr (pre-shuffle) for flat shading
+    move    orig_v1_addr, v1_addr
+tri_to_rdp_noinit: // $ra is next cmd, second tri in TRI2, or middle of clipping
+
+vtx_attrs_1_i equ $v18  // (integer)  [r1, g1, b1, a1, s1, t1, w1, z1]
+vtx_attrs_1_f equ $v5   // (fraction) [r1, g1, b1, a1, s1, t1, w1, z1]
+vtx_attrs_2_i equ $v19
+vtx_attrs_2_f equ $v7
+vtx_attrs_3_i equ $v21
+vtx_attrs_3_f equ $v9
+
+vtx_diff_13 equ $v12
+vtx_diff_12 equ $v10
+vtx_diff_21 equ $v11
+
+v1_clip equ $5
+v2_clip equ $6
+v3_clip equ $7
+
+_0x8000 equ $v31[7]
+
+    /* unaligned branch target */                   vnxor   vtx_attrs_1_f, vZero, _0x8000   // vtx_attrs_1_f = [0x8000, ...]
+    // Load pixel coords of vertex 1 into vtx_p1 (elems 0, 1 = x, y)
+    llv     vtx_p1[0], VTX_SCR_VEC(v1_addr)     ::  vnxor   vtx_attrs_2_f, vZero, _0x8000   // vtx_attrs_2_f = [0x8000, ...]
+    // Load pixel coords of vertex 2 into v4
+    llv     vtx_p2[0], VTX_SCR_VEC(v2_addr)     ::  vmov    vtx_p1[6], vtx_addrs[5]         // elem 6 of vtx_p1 = vertex 1 addr
+    // Load pixel coords of vertex 3 into v8
+    llv     vtx_p3[0], VTX_SCR_VEC(v3_addr)     ::  vnxor   vtx_attrs_3_f, vZero, _0x8000   // vtx_attrs_3_f = [0x8000, ...]
+    lw      v1_clip, VTX_CLIP(v1_addr)          ::  vmov    vtx_p3[6], vtx_addrs[7]         // elem 6 of vtx_p3 = vertex 3 addr
+    lw      v2_clip, VTX_CLIP(v2_addr)          ::  vadd    $v2, vZero, vtx_p1[1]           // v2 = [v1.y, ...]
+    lw      v3_clip, VTX_CLIP(v3_addr)          ::  vsub    vtx_diff_12, vtx_p1, vtx_p2     // v10 = vertex 1 - vertex 2 (x, y, addr)
+    andi    $11, v1_clip, CLIP_ALL_SCRN         ::  vsub    vtx_diff_21, vtx_p2, vtx_p1     // v11 = vertex 2 - vertex 1 (x, y, addr)
+    and     $11, v2_clip, $11                   ::  vsub    vtx_diff_13, vtx_p1, vtx_p3     // vtx_diff_13 = vertex 1 - vertex 3 (x, y, addr)
+    // If there is any screen clipping plane where all three verts are past it... {cont.}
+    and     $11, v3_clip, $11                   ::  vlt     $v13, $v2, vtx_p2[1]            // v13 = min(v1.y, v2.y), VCO = v1.y < v2.y
+
+    // v14 = v1.y < v2.y ? v1 : v2 (lower vertex of v1, v2)
+    vmrg    $v14, vtx_p1, vtx_p2                ::  bnez    $11, return_routine // {cont.} ...whole tri is offscreen, cull.
+     lbu    $11, geometryModeLabel + 2  // Loads the geometry mode byte that contains face culling settings
+
+CrossProduct equ $v29
+
+Pos_H equ $v14  // v1 post-sort
+Pos_M equ $v2   // v2 post-sort
+Pos_L equ $v10  // v3 post-sort
+
+    vmudh   CrossProduct, vtx_diff_12, vtx_diff_13[1]   ::  lw      $12, activeClipPlanes
+    // CrossProduct[0] = (v1 - v2).x * (v1 - v3).y + (v1 - v3).x * (v2 - v1).y (triangle orientation)
+    vmadh   CrossProduct, vtx_diff_13, vtx_diff_21[1]   ::  or      $5, v1_clip, v2_clip
+    // v2 = max(vert1.y, vert2.y), VCO = vert1.y > vert2.y
+    vge     $v2, $v2, vtx_p2[1]                         ::  or      $5, $5, v3_clip     // If any verts are past any clipping plane... {cont.}
+    // v10 = vert1.y > vert2.y ? vert1 : vert2 (higher vertex of vert1, vert2)
+    vmrg    $v10, vtx_p1, vtx_p2                        ::  lw      $11, (gCullMagicNumbers)($11)
+    // v6 = max(max(vert1.y, vert2.y), vert3.y), VCO = max(vert1.y, vert2.y) > vert3.y
+    vge     $v6, $v13, vtx_p3[1]                        ::  mfc2    $6, CrossProduct[0] // elem 0 = x = cross product => lower 16 bits, sign extended
+    // v4 = max(vert1.y, vert2.y) > vert3.y : higher(vert1, vert2) ? vert3 (highest vertex of vert1, vert2, vert3)
+    vmrg    $v4, $v14, vtx_p3                           ::  and     $5, $5, $12         // {cont.} ...which is in the set of currently enabled clipping planes (scaled for XY, screen for ZW)... {cont.}
+    // v14 = max(vert1.y, vert2.y) > vert3.y : vert3 ? higher(vert1, vert2)
+    vmrg    Pos_H, vtx_p3, $v14                         ::  bnez    $5, ovl23_clipping_entrypoint // {cont.} ...then run overlay 3 for clipping, either directly or via overlay 2 loading overlay 3.
+     add     $11, $6, $11     // Add magic number; see description at gCullMagicNumbers
+
+    // v6 (thrown out), VCO = max(vert1.y, vert2.y, vert3.y) < max(vert1.y, vert2.y)
+    vlt     $v6, $v6, $v2                               ::  bgez    $11, return_routine // If sign bit is clear, cull.
+     vmrg    Pos_M, $v4, Pos_L    // v2 = max(vert1.y, vert2.y, vert3.y) < max(vert1.y, vert2.y) : highest(vert1, vert2, vert3) ? highest(vert1, vert2)
+
+Diff_LH equ $v8
+Diff_HM equ $v11
+Diff_HL equ $v12
+Diff_LM equ $v15
+Diff_MH equ $v6
+
+inv_w_all equ $v13
+
+y_spx_i equ $v26
+y_spx_f equ $v4
+
+    // v10 = max(vert1.y, vert2.y, vert3.y) < max(vert1.y, vert2.y) : highest(vert1, vert2) ? highest(vert1, vert2, vert3)
+    vmrg    Pos_L, $v10, $v4            ::  mfc2    v1_addr, Pos_H[12]
+    // y_spx_f = Pos_H * (1 << (16 - 2))    (convert 10.2 to 15.16 where the fraction occupies top 2 bits)
+    // y_spx_f = [X * 0x4000, Y * 0x4000, Z * 0x4000, ...]
+    vmudn   y_spx_f, Pos_H, _0x4000     ::  beqz    $6, return_routine // If cross product is 0, tri is degenerate (zero area), cull.
+     vsub    Diff_MH, Pos_M, Pos_H
+
+CrossProduct2_f equ $v16
+CrossProduct2_i equ $v17
+
+    // scalar path: reclaim (now sorted) addresses for v2 and v3, v1 reclaimed above. Load inverse w from vertices
+    // vector path: compute differences along each edge
+    // e.g. Diff_LH = [ L.x - H.x, L.y, - H.y, L.z - H.z, ... ]
+    mfc2    v2_addr, Pos_M[12]                      ::  vsub    Diff_LH, Pos_L, Pos_H
+    mfc2    v3_addr, Pos_L[12]                      ::  vsub    Diff_HM, Pos_H, Pos_M
+    lw      $6, geometryModeLabel                   ::  vsub    Diff_HL, Pos_H, Pos_L
+    llv     inv_w_all[0], VTX_INV_W_VEC(v1_addr)    ::  vsub    Diff_LM, Pos_L, Pos_M
+    llv     inv_w_all[8], VTX_INV_W_VEC(v2_addr)    ::  vmudh   CrossProduct2_f, Diff_MH, Diff_LH[0]
+    llv     inv_w_all[12], VTX_INV_W_VEC(v3_addr)   ::  vmadh   CrossProduct2_f, Diff_LH, Diff_HM[0]   // cross product: $ACC = Diff_MH * Diff_LH.x + Diff_LH * Diff_HM.x
+    // inv_w_all = [W1i, W1f, -, -, W2i, W2f, W3i, W3f]
+    // Moves the value of G_SHADING_SMOOTH into the sign bit
+    sll     $11, $6, 10                             ::  vreadacc CrossProduct2_i, ACC_UPPER
+    bgez    $11, flat_shading  // Branch to flat shading if G_SHADING_SMOOTH isn't set
+     vreadacc CrossProduct2_f, ACC_MIDDLE
+
+dX equ $v15
+inv_CrossProduct2_i equ $v24
+inv_CrossProduct2_f equ $v23
+
+inv_Diff_LM_f equ $v20
+inv_Diff_LM_i equ $v22
+
+     // Load vert color of vertex 1
+    lpv     vtx_attrs_1_i[0], VTX_COLOR_VEC(v1_addr)    ::  vmov    dX[2], Diff_MH[0]
+    // Load vert color of vertex 2
+    lpv     vtx_attrs_2_i[0], VTX_COLOR_VEC(v2_addr)    ::  vrcp    inv_Diff_LM_f[0], Diff_LM[1] // (L - M).y
+    // Load vert color of vertex 3
+    lpv     vtx_attrs_3_i[0], VTX_COLOR_VEC(v3_addr)    ::  vrcph   inv_Diff_LM_i[0], CrossProduct2_i[1]
+                                                            vrcpl   inv_CrossProduct2_f[1], CrossProduct2_f[1]
+    j       shading_done
+                                                            vrcph   inv_CrossProduct2_i[1], vZero[0]
+flat_shading:
+    // scalar path: load vertex rgb from (pre-shuffled) first vertex, keep alpha per-vertex
+    // vector path: compute various reciprocals
+    /* unaligned branch target */                           lpv     vtx_attrs_1_i[0], VTX_COLOR_VEC(orig_v1_addr)
+    vrcp    inv_Diff_LM_f[0], Diff_LM[1]                ::  lbv     vtx_attrs_1_i[6], VTX_COLOR_A(v1_addr)
+    vrcph   inv_Diff_LM_i[0], CrossProduct2_i[1]        ::  lpv     vtx_attrs_2_i[0], VTX_COLOR_VEC(orig_v1_addr)
+    vrcpl   inv_CrossProduct2_f[1], CrossProduct2_f[1]  ::  lbv     vtx_attrs_2_i[6], VTX_COLOR_A(v2_addr)
+    vrcph   inv_CrossProduct2_i[1], vZero[0]            ::  lpv     vtx_attrs_3_i[0], VTX_COLOR_VEC(orig_v1_addr)
+    vmov    dX[2], Diff_MH[0]                           ::  lbv     vtx_attrs_3_i[6], VTX_COLOR_A(v3_addr)
+shading_done:
+    // these only changed position
+.if CFG_OLD_TRI_WRITE
+    LSHIFT_5 equ $v30[6] // 1 << 5
+    _16 equ $v30[5] // 16
+    _0x100 equ $v30[7] // 0x100 ,   also used at the end of continue_light_dir_xfrm
+.else
+    LSHIFT_5 equ $v30[7] // 1 << 5
+    _16 equ $v30[6] // 16
+    _0x100 equ $v30[3] // 0x100 ,   also used at the end of continue_light_dir_xfrm
+.endif
+
+    // dx and dy scales adjusted between versions, likely for increasing fractional precision
+.if CFG_OLD_TRI_WRITE
+    dx_scale equ $v31[5] // 0x4000
+    dy_scale equ $v31[2] // 8
+.else
+    dx_scale equ $v30[2] // 0x1000
+    dy_scale equ $v30[7] // 32
+.endif
+
+    // vcr VT input changed, not sure what this is for
+.if CFG_OLD_TRI_WRITE
+    VCR_VT equ $v30[2] // 0x1CC
+.else
+    VCR_VT equ $v30[3] // 0x100
+.endif
+
+    // this is only used when !CFG_OLD_TRI_WRITE however it cannot be defined there due to an armips bug
+    _0xFFF8 equ $v30[5]
+
+// destination for intermediate quantities produced by MAC sequences that are not used
+v___ equ $v29
+
+inv_w1 equ $5
+inv_w2 equ $7
+inv_w3 equ $8
+
+inv_dy_i equ $v22
+inv_dy_f equ $v20
+
+    // compute 1 / dY
+    vrcp    inv_dy_f[2], Diff_MH[1]
+    vrcph   inv_dy_i[2], Diff_MH[1]  ::  lw      inv_w1, VTX_INV_W_VEC(v1_addr)
+    vrcp    inv_dy_f[3], Diff_LH[1]  ::  lw      inv_w2, VTX_INV_W_VEC(v2_addr)
+    vrcph   inv_dy_i[3], Diff_LH[1]  ::  lw      inv_w3, VTX_INV_W_VEC(v3_addr)
+    // inv_dy = [-, -, 1 / (M.y - H.y), 1 / (L.y  - H.y), -, -, -, -]
+
+dX_scaled_f equ $v25
+dX_scaled_i equ $v15
+
+inv_dy_scaled_i equ $v20
+inv_dy_scaled_f equ $v22
+
+    // scalar path: computes max(inv_w1, inv_w2, inv_w3)
+    // vertex color 1 >>= 8
+    vmudl   vtx_attrs_1_i, vtx_attrs_1_i, _0x100    ::  lbu     $9, textureSettings1 + 3
+    // vertex color 2 >>= 8
+    vmudl   vtx_attrs_2_i, vtx_attrs_2_i, _0x100    ::  sub     $11, inv_w1, inv_w2     // $11 = inv_w1 - inv_w2
+    // vertex color 3 >>= 8
+    vmudl   vtx_attrs_3_i, vtx_attrs_3_i, _0x100    ::  sra     $12, $11, 31            // $12 = signbit($11) * 0xFFFFFFFF
+    vmov    dX[3], Diff_LH[0]                       ::  and     $11, $11, $12           // $11 = $11 & $12
+    // dX = [-, -, (M - H).x, (L - H).x, -, -, -, -]
+    vmudl   v___, inv_dy_f, dy_scale                ::  sub     $5, inv_w1, $11         // $5 = inv_w1 - $11
+    vmadm   inv_dy_scaled_f, inv_dy_i, dy_scale     ::  sub     $11, $5, inv_w3         // $11 = $5 - inv_w3
+    vmadn   inv_dy_scaled_i, vZero, vZero[0]        ::  sra     $12, $11, 31            // $12 = signbit($11) * 0xFFFFFFFF
+    vmudm   dX_scaled_f, dX, dx_scale               ::  and     $11, $11, $12           // $11 = $11 & $12
+    vmadn   dX_scaled_i, vZero, vZero[0]            ::  sub     $5, $5, $11             // $5 -= $11
+    // dX_scaled = dX * dx_scale
+    // inv_dy_scaled = (1 / dY) * dy_scale
+
+max_inv_w equ $v27
+    // (vsubc, vsub) double-precision subtraction pattern (negate)
+    // Since y_spx_f contains fractional parts only at this point, negating it is the same as doing `floor(x) - x`
+    // on the full-precision numbers
+    vsubc   y_spx_f, vZero, y_spx_f                 ::  sw      $5, 0x10(rdpCmdBufPtr)  // $5 = maximum inv_w value
+    vsub    y_spx_i, vZero, vZero                   ::  llv     max_inv_w[0], 0x10(rdpCmdBufPtr) // reload into vector register
+
+    // calculate dXdY
+dXdY_i equ $v15 // (integer)  [dxldy, -, dxmdy, dxhdy, -, -, -, -]
+dXdY_f equ $v20 // (fraction) [dxldy, -, dxmdy, dxhdy, -, -, -, -]
+dXhdY_i equ dXdY_i[3]
+dXhdY_f equ dXdY_f[3]
+
+    // dXdY = dX * (1 / dY)
+    vmudm   v___, dX_scaled_f, inv_dy_scaled_i      ::  mfc2    $5, CrossProduct2_i[1]
+    vmadl   v___, dX_scaled_i, inv_dy_scaled_i      ::  lbu     $7, textureSettings1 + 2
+    vmadn   dXdY_f, dX_scaled_i, inv_dy_scaled_f    ::  lsv     vtx_attrs_2_i[14], VTX_SCR_Z(v2_addr)
+    vmadh   dXdY_i, dX_scaled_f, inv_dy_scaled_f    ::  lsv     vtx_attrs_3_i[14], VTX_SCR_Z(v3_addr)
+
+NR_temp_f equ $v16
+NR_temp_i equ $v17
+
+    // Newton-Raphson refinement
+    // NR_temp = (1 / CrossProduct2) * CrossProduct2
+    vmudl   v___, inv_CrossProduct2_f, CrossProduct2_f      ::  lsv     vtx_attrs_2_f[14], VTX_SCR_Z_FRAC(v2_addr)
+    vmadm   v___, inv_CrossProduct2_i, CrossProduct2_f      ::  lsv     vtx_attrs_3_f[14], VTX_SCR_Z_FRAC(v3_addr)
+    vmadn   NR_temp_f, inv_CrossProduct2_f, CrossProduct2_i ::  ori     $11, $6, G_TRI_FILL // Combine geometry mode (only the low byte will matter) with the base triangle type to make the triangle command id
+    vmadh   NR_temp_i, inv_CrossProduct2_i, CrossProduct2_i ::  or      $11, $11, $9 // Incorporate whether textures are enabled into the triangle command id
+
+.if !CFG_OLD_TRI_WRITE
+    dXdY_f_2 equ $v22
+    // drops lowest 3 bits of dxdy fraction
+    vand    $v22, dXdY_f, _0xFFF8
+.else
+    // leaves dxdy fraction as-is
+    dXdY_f_2 equ dXdY_f
+.endif
+
+    // VCR_VT = (0x0100 or 0x01CC)
+    vcr     dXdY_i, dXdY_i, VCR_VT      ::  sb      $11, 0x0000(rdpCmdBufPtr) // Store the triangle command id
+
+_m16 equ $v30[4] // -16
+
+    // Newton-Raphson
+    // NR_temp = 16 - 16 * NR_temp = 16 - 16 * (inv_CrossProduct2 * CrossProduct2)
+    vmudh   v___, vOne, _16                 ::  ssv     Pos_L[2], 0x0002(rdpCmdBufPtr) // Store YL edge coefficient
+    vmadn   NR_temp_f, NR_temp_f, _m16      ::  ssv     Pos_M[2], 0x0004(rdpCmdBufPtr) // Store YM edge coefficient
+    vmadh   NR_temp_i, NR_temp_i, _m16      ::  ssv     Pos_H[2], 0x0006(rdpCmdBufPtr) // Store YH edge coefficient
+
+PosXHM_i equ $v3
+PosXHM_f equ $v2
+
+    // v0x4000 = [0x4000, ...]  (for converting 10.2 Pos_H to 15.16)
+    // computes `Pos_H.x + y_spx * dXdY` at double-precision (15.16 inputs, 15.16 output)
+    vmudn   v___, v0x4000, Pos_H[0]         ::  andi    $12, $5, 0x0080         // Extract the left major flag from $5
+    vmadl   v___, dXdY_f_2, y_spx_f[1]      ::  or      $12, $12, $7            // Combine the left major flag with the level and tile from the texture settings
+    vmadm   v___, dXdY_i, y_spx_f[1]        ::  sb      $12, 0x0001(rdpCmdBufPtr) // Store the left major flag, level, and tile settings
+    vmadn   PosXHM_f, dXdY_f_2, y_spx_i[1]  ::  beqz    $9, skipped_textures    // If textures are not enabled, skip texture coefficient calculation
+     vmadh  PosXHM_i, dXdY_i, y_spx_i[1]
+
+inv_w_all_frac equ $v14
+
+inv_max_inv_w_i equ $v27
+inv_max_inv_w_f equ $v10
+
+    vrcph   v___[0], max_inv_w[0]                   // maximum inverse w (int)
+    vrcpl   inv_max_inv_w_f[0], max_inv_w[1]        // maximum inverse w (frac)
+    vadd    inv_w_all_frac, vZero, inv_w_all[1q]    // inv_w_all_frac = [W1f, W1f, -, -, W2f, W2f, W3f, W3f]
+    vrcph   inv_max_inv_w_i[0], vZero[0]
+
+STW_i_12 equ $v22
+STW_f_12 equ $v25
+
+inv_w_normalized_f equ $v14
+inv_w_normalized_i equ $v13
+
+_0x7FFF equ $v31[7]
+
+    vor     STW_i_12, vZero, _0x7FFF    // fill STW_i_12 with 0x7FFF
+    vmudm   v___, inv_w_all, inv_max_inv_w_f[0]
+    vmadl   v___, inv_w_all_frac, inv_max_inv_w_f[0]                ::  llv     STW_i_12[0], VTX_TC_VEC(v1_addr)
+    vmadn   inv_w_normalized_f, inv_w_all_frac, inv_max_inv_w_i[0]  ::  llv     STW_i_12[8], VTX_TC_VEC(v2_addr)
+    vmadh   inv_w_normalized_i, inv_w_all, inv_max_inv_w_i[0]
+                                                                    // STW_i_12 = [S1, T1, 0x7FFF, 0x7FFF, S2, T2, 0x7FFF, 0x7FFF]
+    // inv_w_normalized = [W1i, W1f, -, -, W2f, W2f, W3f, W3f] / max_inv_W
+
+STW_i_3 equ $v10
+STW_f_3 equ $v13
+
+    vor     STW_i_3, vZero, _0x7FFF // fill STW_i_3 with 0x7FFF
+    // vge sets $vcc to 11110001 for merging later, assumes the contents of $v30 give this result
+    vge     v___, $v30, $v30[7]                     ::  llv     STW_i_3[8], VTX_TC_VEC(v3_addr)
+                                                    // STW_i_3 = [0x7FFF, 0x7FFF, 0x7FFF, 0x7FFF, S3, T3, 0x7FFF, 0x7FFF]
+
+    vmudm   v___, STW_i_12, inv_w_normalized_f[0h]
+    vmadh   STW_i_12, STW_i_12, inv_w_normalized_i[0h]  // multiply in W1i and W2i
+    vmadn   STW_f_12, vZero, vZero[0]                   // STW_f_12 = lo(clamp(acc)), extract result of MAC sequence
+
+    vmudm   v___, STW_i_3, inv_w_normalized_f[6]
+    vmadh   STW_i_3, STW_i_3, inv_w_normalized_i[6]
+                                                    // shuffle first 4 16-bit elements from STW_i_12/STW_f_12 to last 4 16-bit elements in vtx_attrs_1_i/A0_f
+    vmadn   STW_f_3, vZero, vZero[0]                ::  sdv     STW_i_12[0], 0x0020(rdpCmdBufPtr)
+    // merge S,T,W into elements 4,5,6
+    vmrg    vtx_attrs_2_i, vtx_attrs_2_i, STW_i_12  ::  sdv     STW_f_12[0], 0x0028(rdpCmdBufPtr)
+    vmrg    vtx_attrs_2_f, vtx_attrs_2_f, STW_f_12  ::  ldv     vtx_attrs_1_i[8], 0x0020(rdpCmdBufPtr)
+    vmrg    vtx_attrs_3_i, vtx_attrs_3_i, STW_i_3   ::  ldv     vtx_attrs_1_f[8], 0x0028(rdpCmdBufPtr)
+    vmrg    vtx_attrs_3_f, vtx_attrs_3_f, STW_f_3
+skipped_textures:
+    // note this branch target is not 8-byte aligned in some versions so the dual-issue of instructions may be offset by one instruction, that is in
+    // some versions the first vmudl does not dual issue with anything, while the lsv and vmadm would dual-issue and so on
+
+TriShadePtr equ $2
+
+inv_dX_i equ $v24
+inv_dX_f equ $v23
+
+    // Newton-Raphson
+    // inv_dX = inv_CrossProduct2 * NR_temp - inv_CrossProduct2 * (16 - 16 * (inv_CrossProduct2 * CrossProduct2))
+    vmudl   v___, NR_temp_f, inv_CrossProduct2_f        ::  lsv     vtx_attrs_1_f[14], VTX_SCR_Z_FRAC(v1_addr)  // load Z values into vtx_attrs_1_i and vtx_attrs_1_f
+    vmadm   v___, NR_temp_i, inv_CrossProduct2_f        ::  lsv     vtx_attrs_1_i[14], VTX_SCR_Z(v1_addr)
+    vmadn   inv_dX_f, NR_temp_f, inv_CrossProduct2_i    ::  lh      $1, VTX_SCR_X(v2_addr)          // load screen X for middle vertex
+    vmadh   inv_dX_i, NR_temp_i, inv_CrossProduct2_i    ::  addiu   TriShadePtr, rdpCmdBufPtr, 0x20 // Increment the triangle pointer by 0x20 bytes (edge coefficients)
+
+dA_M_i equ $v7
+dA_M_f equ $v13
+dA_H_i equ $v9
+dA_H_f equ $v10
+
+    // dAdH = v3_att - v1_att
+    vsubc   dA_H_f, vtx_attrs_3_f, vtx_attrs_1_f    ::  andi    $3, $6, G_SHADE
+    vsub    dA_H_i, vtx_attrs_3_i, vtx_attrs_1_i    ::  sll     $1, $1, 14                          // middle vertex X coord << 14
+    // dAdM = v2_att - v1_att
+    vsubc   dA_M_f, vtx_attrs_2_f, vtx_attrs_1_f    ::  sw      $1, 0x0008(rdpCmdBufPtr)            // Store XL int and frac (16 bits each)
+    vsub    dA_M_i, vtx_attrs_2_i, vtx_attrs_1_i    ::  ssv     PosXHM_i[6], 0x0010(rdpCmdBufPtr)   // Store XH (integer part)
+
+// d(attribute).x
+dA_x_f equ $v2  // (fraction) [dr.x, dg.x, db.x, da.x, ds.x, dt.x, dw.x, dz.x]
+dA_x_i equ $v3  // (integer)  [dr.x, dg.x, db.x, da.x, ds.x, dt.x, dw.x, dz.x]
+
+    // dA_x = dMH.y * dAdH + dHL.y * dAdM
+    vmudn   v___, dA_H_f, Diff_MH[1]    ::  ssv     PosXHM_f[6], 0x0012(rdpCmdBufPtr)   // Store XH (fractional part)
+    vmadh   v___, dA_H_i, Diff_MH[1]    ::  ssv     PosXHM_i[4], 0x0018(rdpCmdBufPtr)   // Store XM (integer part)
+    vmadn   v___, dA_M_f, Diff_HL[1]    ::  ssv     PosXHM_f[4], 0x001A(rdpCmdBufPtr)   // Store XM (fractional part)
+    vmadh   v___, dA_M_i, Diff_HL[1]    ::  ssv     dXdY_i[0], 0x000C(rdpCmdBufPtr)     // Store DxLDy (integer part)
+    vreadacc dA_x_f, ACC_MIDDLE         ::  ssv     dXdY_f[0], 0x000E(rdpCmdBufPtr)     // Store DxLDy (fractional part)
+    vreadacc dA_x_i, ACC_UPPER          ::  ssv     dXdY_i[6], 0x0014(rdpCmdBufPtr)     // Store DxHDy (integer part)
+
+// d(attribute).y
+dA_y_f equ $v6  // (fraction) [dr.y, dg.y, db.y, da.y, ds.y, dt.y, dw.y, dz.y]
+dA_y_i equ $v7  // (integer)  [dr.y, dg.y, db.y, da.y, ds.y, dt.y, dw.y, dz.y]
+
+TriTexPtr equ $1
+
+    // dAdY = dLH.x * dAdM + dHM.x * dAdH
+    vmudn   v___, dA_M_f, Diff_LH[0]    ::  ssv     dXdY_f[6], 0x0016(rdpCmdBufPtr) // Store DxHDy (fractional part)
+    vmadh   v___, dA_M_i, Diff_LH[0]    ::  ssv     dXdY_i[4], 0x001C(rdpCmdBufPtr) // Store DxMDy (integer part)
+    vmadn   v___, dA_H_f, Diff_HM[0]    ::  ssv     dXdY_f[4], 0x001E(rdpCmdBufPtr) // Store DxMDy (fractional part)
+    vmadh   v___, dA_H_i, Diff_HM[0]    ::  sll     $11, $3, 4                      // Shift (geometry mode & G_SHADE) (which is 4 when on) by 4 to get 0x40 if G_SHADE is set
+    vreadacc dA_y_f, ACC_MIDDLE         ::  add     TriTexPtr, TriShadePtr, $11     // Increment the triangle pointer by 0x40 bytes (shade coefficients) if G_SHADE is set
+    vreadacc dA_y_i, ACC_UPPER          ::  sll     $11, $9, 5                      // Shift texture enabled (which is 2 when on) by 5 to get 0x40 if textures are on
+
+// compute d(attribute)/d[x,y,z]
+
+dAdX_f equ dA_x_f
+dAdX_i equ dA_x_i
+
+    // dAdX = dA.x * (1 / dx)
+    vmudl   v___, dA_x_f, inv_dX_f[1]           ::  add     rdpCmdBufPtr, TriTexPtr, $11    // Increment the triangle pointer by 0x40 bytes (texture coefficients) if textures are on
+    vmadm   v___, dA_x_i, inv_dX_f[1]           ::  andi    $6, $6, G_ZBUFFER               // Get the value of G_ZBUFFER from the current geometry mode
+    vmadn   dAdX_f, dA_x_f, inv_dX_i[1]         ::  sll     $11, $6, 4                      // Shift (geometry mode & G_ZBUFFER) by 4 to get 0x10 if G_ZBUFFER is set
+    vmadh   dAdX_i, dA_x_i, inv_dX_i[1]         ::  add     rdpCmdBufPtr, rdpCmdBufPtr, $11 // Increment the triangle pointer by 0x10 bytes (depth coefficients) if G_ZBUFFER is set
+
+dAdY_f equ dA_y_f
+dAdY_i equ dA_y_i
+
+dAdE_f equ $v8  // (fraction) [drde, dgde, dbde, dade, dsde, dtde, dwde, dzde]
+dAdE_i equ $v9  // (integer)  [drde, dgde, dbde, dade, dsde, dtde, dwde, dzde]
+
+    // dAdY = dA.y * (1 / dy)
+    vmudl   v___, dA_y_f, inv_dX_f[1]
+    vmadm   v___, dA_y_i, inv_dX_f[1]
+    vmadn   dAdY_f, dA_y_f, inv_dX_i[1]         ::  sdv     dAdX_f[0], 0x0018(TriShadePtr)  // Store drdx, dgdx, dbdx, dadx shade coefficients (fractional)
+    vmadh   dAdY_i, dA_y_i, inv_dX_i[1]         ::  sdv     dAdX_i[0], 0x0008(TriShadePtr)  // Store drdx, dgdx, dbdx, dadx shade coefficients (integer)
+    // dAdE = dAdY + dAdX * dxhdy
+    vmadl   v___, dAdX_f, dXhdY_f               ::  sdv     dAdX_f[8], 0x0018(TriTexPtr)    // Store dsdx, dtdx, dwdx texture coefficients (fractional)
+    vmadm   v___, dAdX_i, dXhdY_f               ::  sdv     dAdX_i[8], 0x0008(TriTexPtr)    // Store dsdx, dtdx, dwdx texture coefficients (integer)
+    vmadn   dAdE_f, dAdX_f, dXhdY_i             ::  sdv     dAdY_f[0], 0x0038(TriShadePtr)  // Store drdy, dgdy, dbdy, dady shade coefficients (fractional)
+    vmadh   dAdE_i, dAdX_i, dXhdY_i             ::  sdv     dAdY_i[0], 0x0028(TriShadePtr)  // Store drdy, dgdy, dbdy, dady shade coefficients (integer)
+
+// compute attribute base value
+
+    // A' = A + dAdE * y_spx
+    vmudn   v___, vtx_attrs_1_f, vOne[0]        ::  sdv     dAdY_f[8], 0x0038(TriTexPtr)    // Store dsdy, dtdy, dwdy texture coefficients (fractional)
+    vmadh   v___, vtx_attrs_1_i, vOne[0]        ::  sdv     dAdY_i[8], 0x0028(TriTexPtr)    // Store dsdy, dtdy, dwdy texture coefficients (integer)
+    vmadl   v___, dAdE_f, y_spx_f[1]            ::  sdv     dAdE_f[0], 0x0030(TriShadePtr)  // Store drde, dgde, dbde, dade shade coefficients (fractional)
+    vmadm   v___, dAdE_i, y_spx_f[1]            ::  sdv     dAdE_i[0], 0x0020(TriShadePtr)  // Store drde, dgde, dbde, dade shade coefficients (integer)
+    vmadn   vtx_attrs_1_f, dAdE_f, y_spx_i[1]   ::  sdv     dAdE_f[8], 0x0030(TriTexPtr)    // Store dsde, dtde, dwde texture coefficients (fractional)
+    vmadh   vtx_attrs_1_i, dAdE_i, y_spx_i[1]   ::  sdv     dAdE_i[8], 0x0020(TriTexPtr)    // Store dsde, dtde, dwde texture coefficients (integer)
+
+    // $v10 = dAdE_f * y_spx_f
+    vmudn   $v10, dAdE_f, y_spx_f[1]            ::  beqz    $6, no_z_buffer
+    // dAd* = dAd* * (1 << 5)
+     vmudn  dAdE_f, dAdE_f, LSHIFT_5
+    vmadh   dAdE_i, dAdE_i, LSHIFT_5            ::  sdv     vtx_attrs_1_f[0], 0x10(TriShadePtr) // Store RGBA shade color (fractional)
+    vmudn   dAdX_f, dAdX_f, LSHIFT_5            ::  sdv     vtx_attrs_1_i[0], 0x00(TriShadePtr) // Store RGBA shade color (integer)
+    vmadh   dAdX_i, dAdX_i, LSHIFT_5            ::  sdv     vtx_attrs_1_f[8], 0x10(TriTexPtr)   // Store S, T, W texture coefficients (fractional)
+    vmudn   dAdY_f, dAdY_f, LSHIFT_5            ::  sdv     vtx_attrs_1_i[8], 0x00(TriTexPtr)   // Store S, T, W texture coefficients (integer)
+    vmadh   dAdY_i, dAdY_i, LSHIFT_5            ::  ssv     dAdE_f[14], (0x000A - 0x10)(rdpCmdBufPtr) // Store dzde (frac)
+
+    // A'' = A' * (1 << 5) + $v10 * (1 << 5) = (A' + dAdE_f * y_spx_f) * (1 << 5)
+    vmudl   v___, $v10, LSHIFT_5                    ::  ssv     dAdE_i[14], (0x0008 - 0x10)(rdpCmdBufPtr) // Store dzde (int)
+    vmadn   vtx_attrs_1_f, vtx_attrs_1_f, LSHIFT_5  ::  ssv     dAdX_f[14], (0x0006 - 0x10)(rdpCmdBufPtr) // Store dzdx (frac)
+    vmadh   vtx_attrs_1_i, vtx_attrs_1_i, LSHIFT_5  ::  ssv     dAdX_i[14], (0x0004 - 0x10)(rdpCmdBufPtr) // Store dzdx (int)
+                                                        ssv     dAdY_f[14], (0x000E - 0x10)(rdpCmdBufPtr) // Store dzdy (frac)
+                                                        ssv     dAdY_i[14], (0x000C - 0x10)(rdpCmdBufPtr) // Store dzdy (int)
+                                                        ssv     vtx_attrs_1_f[14], (0x0002 - 0x10)(rdpCmdBufPtr) // Store z (frac)
+                                                        // eventually returns to $ra, which is next cmd, second tri in TRI2, or middle of clipping
+                                                        j       check_rdp_buffer_full
+                                                        ssv     vtx_attrs_1_i[14], (0x0000 - 0x10)(rdpCmdBufPtr) // Store z (int)
 no_z_buffer:
-    sdv     $v5[0], 0x0010($2)      // Store RGBA shade color (fractional)
-    sdv     $v18[0], 0x0000($2)     // Store RGBA shade color (integer)
-    sdv     $v5[8], 0x0010($1)      // Store S, T, W texture coefficients (fractional)
-    j       check_rdp_buffer_full   // eventually returns to $ra, which is next cmd, second tri in TRI2, or middle of clipping
-     sdv    $v18[8], 0x0000($1)     // Store S, T, W texture coefficients (integer)
+    sdv     vtx_attrs_1_f[0], 0x10($2)  // Store RGBA shade color (fractional)
+    sdv     vtx_attrs_1_i[0], 0x00($2)  // Store RGBA shade color (integer)
+    sdv     vtx_attrs_1_f[8], 0x10($1)  // Store S, T, W texture coefficients (fractional)
+    j       check_rdp_buffer_full       // eventually returns to $ra, which is next cmd, second tri in TRI2, or middle of clipping
+     sdv    vtx_attrs_1_i[8], 0x00($1)  // Store S, T, W texture coefficients (integer)
+
+
 
 vtxPtr    equ $25 // = cmd_w0
 endVtxPtr equ $24 // = cmd_w1_dram
 G_CULLDL_handler:
     lhu     vtxPtr, (vertexTable)(cmd_w0)     // load start vertex address
     lhu     endVtxPtr, (vertexTable)(cmd_w1_dram) // load end vertex address
-    addiu   $1, $zero, (CLIP_NX | CLIP_NY | CLIP_PX | CLIP_PY | CLIP_FAR | CLIP_NEAR)
+    addiu   $1, $zero, CLIP_ALL
     lw      $11, VTX_CLIP(vtxPtr)             // read clip flags from vertex
 culldl_loop:
     and     $1, $1, $11
@@ -2166,7 +2298,7 @@ ovl23_clipping_entrypoint_copy:  // same IMEM address as ovl23_clipping_entrypoi
     li      ovlTableEntry, overlayInfo3       // set up a load of overlay 3
     j       load_overlay_and_enter            // load overlay 3
      li     postOvlRA, ovl3_clipping_nosavera // set up the return address in ovl3
-     
+
 continue_light_dir_xfrm:
     // Transform light directions from camera space to model space, by
     // multiplying by modelview transpose, then normalize and store the results
@@ -2248,9 +2380,9 @@ continue_light_dir_xfrm:
     vmadm   $v29, $v15, $v16[0]
     vmadn   $v11, $v11, $v17[0]
     vmadh   $v15, $v15, $v17[0]
-    vmudn   $v11, $v11, $v30[i1]        // 0x0100; scale results to become bytes
+    vmudn   $v11, $v11, _0x100          // 0x0100; scale results to become bytes
     j       @@loop
-     vmadh  $v15, $v15, $v30[i1]        // 0x0100; scale results to become bytes
+     vmadh  $v15, $v15, _0x100          // 0x0100; scale results to become bytes
 
 curMatrix equ $12 // Overwritten during texgen, but with a value which is 0 or positive, so means cur matrix is MV
 ltColor equ $v29
