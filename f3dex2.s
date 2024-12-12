@@ -1,9 +1,12 @@
 .rsp
+#include "rcp.h"
+#include "sptask.h"
+#include "rspboot.h"
+#include "gbi.h"
+#include "gbi_internal.h"
 
-.include "rsp/rsp_defs.inc"
-.include "rsp/gbi.inc"
-
-// This file assumes DATA_FILE and CODE_FILE are set on the command line
+// This file assumes DATA_FILE and CODE_FILE are set on the command line and that it is
+// preprocessed with the C Preprocessor with include paths set for PR/ and rsp/
 
 .if version() < 110
     .error "armips 0.11 or newer is required"
@@ -195,9 +198,9 @@ segmentTable:
 displayListStack:
 
 // 0x0138-0x0180: ucode text (shared with DL stack)
-.if CFG_EXTRA_0A_BEFORE_ID_STR // F3DEX2 2.04H puts an extra 0x0A before the name
+#if CFG_EXTRA_0A_BEFORE_ID_STR // F3DEX2 2.04H puts an extra 0x0A before the name
     .db 0x0A
-.endif
+#endif
     .ascii ID_STR, 0x0A
 
 .align 16
@@ -222,11 +225,11 @@ clipRatio: // This is an array of 6 doublewords
     .dw 0x00010000, 0x0000FFFE // 1 * x, (-)G_MWO_CLIP_RPX * w = positive x clip
     .dw 0x00000001, 0x0000FFFE // 1 * x, (-)G_MWO_CLIP_RPY * w = positive y clip
     .dw 0x00000000, 0x0001FFFF // 1 * z,  -1 * w = far clip
-.if CFG_NoN
+#if CFG_NoN
     .dw 0x00000000, 0x00000001 // 0 * all, 1 * w = no nearclipping
-.else
+#else
     .dw 0x00000000, 0x00010001 // 1 * z,   1 * w = nearclipping
-.endif
+#endif
 
 // 0x1B0: constants for register $v31
 .align 0x10 // loaded with lqv
@@ -251,21 +254,21 @@ v31Value:
 v30Value:
     .dh 0x7FFC // not used!
     .dh vtxSize << 7 // 0x1400; it's not 0x2800 because vertex indices are *2; used in tri write for vtx index to addr
-.if CFG_OLD_TRI_WRITE // See discussion in tri write where v30 values used
+#if CFG_OLD_TRI_WRITE // See discussion in tri write where v30 values used
     .dh 0x01CC // used in tri write, vcr?
     .dh 0x0200 // not used!
     .dh -16    // used in tri write for Newton-Raphson reciprocal 
     .dh 0x0010 // used in tri write for Newton-Raphson reciprocal
     .dh 0x0020 // used in tri write, both signed and unsigned multipliers
     .dh 0x0100 // used in tri write, vertex color >>= 8; also in lighting
-.else
+#else
     .dh 0x1000 // used in tri write, some multiplier
     .dh 0x0100 // used in tri write, vertex color >>= 8 and vcr?; also in lighting and point lighting
     .dh -16    // used in tri write for Newton-Raphson reciprocal 
     .dh 0xFFF8 // used in tri write, mask away lower ST bits?
     .dh 0x0010 // used in tri write for Newton-Raphson reciprocal; value moved to elem 7 for point lighting
     .dh 0x0020 // used in tri write, both signed and unsigned multipliers; value moved from elem 6 from point lighting
-.endif
+#endif
 
 /*
 Quick note on Newton-Raphson:
@@ -317,7 +320,25 @@ textureSettings1:
 textureSettings2:
     .dw 0x00000000 // second word, has s and t scale
 
-// 0x01EC
+// 0x01EC Geometry mode flags
+// Considerations for each byte:
+// - The first byte, containing zbuffer/texture/shade flags, gets OR'd with 0xC8
+//   (G_TRI_FILL) to form the complete triangle opcode. So a modder could use
+//   0x80, 0x40 and/or 0x08 for other purposes while remaining forward compatible.
+//   (Of course, if you only care about backward compatibility, you can AND 0x07
+//   before the OR 0xC8 and use all the extra bits.) Note that backward compatible
+//   means a new/modded microcode will run old/vanilla DLs correctly, and forward
+//   compatible means an old/vanilla microcode will run DLs made for a new/modded
+//   microcode without any problems besides the specific new features missing.
+// - The second byte, containing face culling flags, is used as an index into a
+//   table, so using any other bits will break forwards compatibility. Again, if
+//   you only want backwards compatibility, AND 0x06 when this is loaded and then
+//   you can use all six other bits.
+// - The top byte holds the geometry mode opcode in the clear mask, so all its
+//   bits will either get cleared every time geom mode is set, or can never be
+//   cleared. The info in gbi.h warning programmers not to use the high 8 bits
+//   because they form a "clip code mask" is kind of irrelevant given that these
+//   bits can't be properly set or cleared.
 geometryModeLabel:
     .dw G_CLIPPING
 
@@ -750,40 +771,40 @@ postOvlRA     equ $12 // Commonly used locally
 // Initialization routines
 // Everything up until displaylist_dma will get overwritten by ovl0 and/or ovl1
 start: // This is at IMEM 0x1080, not the start of IMEM
-.if BUG_WRONG_INIT_VZERO
+#if BUG_WRONG_INIT_VZERO
     vor     vZero, $v16, $v16 // Sets vZero to $v16--maybe set to zero by the boot ucode?
-.else
+#else
     vclr    vZero             // Clear vZero
-.endif
+#endif
     lqv     $v31[0], (v31Value)($zero)
     lqv     $v30[0], (v30Value)($zero)
     li      rdpCmdBufPtr, rdpCmdBuffer1
-.if !BUG_FAIL_IF_CARRY_SET_AT_INIT
+#if !BUG_FAIL_IF_CARRY_SET_AT_INIT
     vadd    vOne, vZero, vZero   // Consume VCO (carry) value possibly set by the previous ucode, before vsub below
-.endif
+#endif
     li      rdpCmdBufEnd, rdpCmdBuffer1End
     vsub    vOne, vZero, $v31[0]   // Vector of 1s
-.if !CFG_XBUS // FIFO version
+#if !CFG_XBUS // FIFO version
     lw      $11, rdpFifoPos
-    lw      $12, OSTask + OSTask_flags
+    lw      $12, OSTask + OS_TASK_OFF_FLAGS
     li      $1, SP_CLR_SIG2 | SP_CLR_SIG1   // task done and yielded signals
     beqz    $11, task_init
      mtc0   $1, SP_STATUS
     andi    $12, $12, OS_TASK_YIELDED
     beqz    $12, calculate_overlay_addrs    // skip overlay address calculations if resumed from yield?
-     sw     $zero, OSTask + OSTask_flags
+     sw     $zero, OSTask + OS_TASK_OFF_FLAGS
     j       load_overlay1_init              // Skip the initialization and go straight to loading overlay 1
      lw     taskDataPtr, OS_YIELD_DATA_SIZE - 8  // Was previously saved here at yield time
 task_init:
     mfc0    $11, DPC_STATUS
-    andi    $11, $11, DPC_STATUS_XBUS_DMA
+    andi    $11, $11, DPC_STATUS_XBUS_DMEM_DMA
     bnez    $11, wait_dpc_start_valid
      mfc0   $2, DPC_END
-    lw      $3, OSTask + OSTask_output_buff
+    lw      $3, OSTask + OS_TASK_OFF_OUTBUFF
     sub     $11, $3, $2
     bgtz    $11, wait_dpc_start_valid
      mfc0   $1, DPC_CURRENT
-    lw      $4, OSTask + OSTask_output_buff_size
+    lw      $4, OSTask + OS_TASK_OFF_OUTBUFF_SZ
     beqz    $1, wait_dpc_start_valid
      sub    $11, $1, $4
     bgez    $11, wait_dpc_start_valid
@@ -793,41 +814,41 @@ wait_dpc_start_valid:
      mfc0   $11, DPC_STATUS
     andi    $11, $11, DPC_STATUS_START_VALID
     bnez    $11, wait_dpc_start_valid
-     li     $11, DPC_STATUS_CLR_XBUS
+     li     $11, DPC_CLR_XBUS_DMEM_DMA
     mtc0    $11, DPC_STATUS
-    lw      $2, OSTask + OSTask_output_buff_size
+    lw      $2, OSTask + OS_TASK_OFF_OUTBUFF_SZ
     mtc0    $2, DPC_START
     mtc0    $2, DPC_END
 f3dzex_0000111C:
     sw      $2, rdpFifoPos
-.else // CFG_XBUS
+#else // CFG_XBUS
 wait_dpc_start_valid:
     mfc0 $11, DPC_STATUS
     andi $11, $11, DPC_STATUS_DMA_BUSY | DPC_STATUS_START_VALID 
     bne $11, $zero, wait_dpc_start_valid
      sw $zero, rdpFifoPos
-    addi $11, $zero, DPC_STATUS_SET_XBUS
+    addi $11, $zero, DPC_SET_XBUS_DMEM_DMA
     mtc0 $11, DPC_STATUS
     addi rdpCmdBufPtr, $zero, rdpCmdBuffer1
     mtc0 rdpCmdBufPtr, DPC_START
     mtc0 rdpCmdBufPtr, DPC_END
-    lw $12, OSTask + OSTask_flags
+    lw $12, OSTask + OS_TASK_OFF_FLAGS
     addi $1, $zero, SP_CLR_SIG2 | SP_CLR_SIG1
     mtc0 $1, SP_STATUS
     andi $12, $12, OS_TASK_YIELDED
     beqz $12, f3dzex_xbus_0000111C
-     sw $zero, OSTask + OSTask_flags
+     sw $zero, OSTask + OS_TASK_OFF_FLAGS
     j load_overlay1_init
      lw taskDataPtr, OS_YIELD_DATA_SIZE - 8 // Was previously saved here at yield time
 .fill 16 * 4 // Bunch of nops here to make it the same size as the fifo code.
 f3dzex_xbus_0000111C:
-.endif
+#endif
     lw      $11, matrixStackPtr
     bnez    $11, calculate_overlay_addrs
-     lw     $11, OSTask + OSTask_dram_stack
+     lw     $11, OSTask + OS_TASK_OFF_STACK
     sw      $11, matrixStackPtr
 calculate_overlay_addrs:
-    lw      $1, OSTask + OSTask_ucode
+    lw      $1, OSTask + OS_TASK_OFF_UCODE
     lw      $2, overlayInfo0 + overlay_load
     lw      $3, overlayInfo1 + overlay_load
     lw      $4, overlayInfo2 + overlay_load
@@ -840,7 +861,7 @@ calculate_overlay_addrs:
     add     $5, $5, $1
     sw      $4, overlayInfo2 + overlay_load
     sw      $5, overlayInfo3 + overlay_load
-    lw      taskDataPtr, OSTask + OSTask_data_ptr
+    lw      taskDataPtr, OSTask + OS_TASK_OFF_DATA
 load_overlay1_init:
     li      ovlTableEntry, overlayInfo1   // set up loading of overlay 1
 
@@ -879,9 +900,9 @@ G_MOVEMEM_end:
     jal     while_wait_dma_busy                         // wait for the DMA read to finish
 G_LINE3D_handler:
 G_SPNOOP_handler:
-.if !CFG_G_SPECIAL_1_IS_RECALC_MVP                      // F3DEX2 2.04H has this as a real command
+#if !CFG_G_SPECIAL_1_IS_RECALC_MVP                      // F3DEX2 2.04H has this as a real command
 G_SPECIAL_1_handler:
-.endif
+#endif
 G_SPECIAL_2_handler:
 G_SPECIAL_3_handler:
 run_next_DL_command:
@@ -897,7 +918,7 @@ run_next_DL_command:
     jr      $11                                         // jump to the loaded command handler; $1 == 0
      addiu  inputBufferPos, inputBufferPos, 0x0008      // increment the DL index by 2 words
 
-.if CFG_G_SPECIAL_1_IS_RECALC_MVP // Microcodes besides F3DEX2 2.04H have this as a noop
+#if CFG_G_SPECIAL_1_IS_RECALC_MVP // Microcodes besides F3DEX2 2.04H have this as a noop
 G_SPECIAL_1_handler:    // Seems to be a manual trigger for mvp recalculation
     li      $ra, run_next_DL_command
     li      input_mtx_0, pMatrix
@@ -905,7 +926,7 @@ G_SPECIAL_1_handler:    // Seems to be a manual trigger for mvp recalculation
     li      output_mtx, mvpMatrix
     j       mtx_multiply
      sb     cmd_w0, mvpValid
-.endif
+#endif
 
 G_DMA_IO_handler:
     jal     segmented_to_physical // Convert the provided segmented address (in cmd_w1_dram) to a virtual one
@@ -969,7 +990,7 @@ G_SETSCISSOR_handler:
 check_rdp_buffer_full_and_run_next_cmd:
     li      $ra, run_next_DL_command    // Set up running the next DL command as the return address
 
-.if !CFG_XBUS // FIFO version
+#if !CFG_XBUS // FIFO version
 check_rdp_buffer_full:
      sub    $11, rdpCmdBufPtr, rdpCmdBufEnd
     blez    $11, return_routine         // Return if rdpCmdBufEnd >= rdpCmdBufPtr
@@ -978,7 +999,7 @@ flush_rdp_buffer:
     lw      cmd_w1_dram, rdpFifoPos
     addiu   dmaLen, $11, RDP_CMD_BUFSIZE
     bnez    $12, flush_rdp_buffer
-     lw     $12, OSTask + OSTask_output_buff_size
+     lw     $12, OSTask + OS_TASK_OFF_OUTBUFF_SZ
     mtc0    cmd_w1_dram, DPC_END
     add     $11, cmd_w1_dram, dmaLen
     sub     $12, $12, $11
@@ -987,7 +1008,7 @@ flush_rdp_buffer:
      mfc0   $11, DPC_STATUS
     andi    $11, $11, DPC_STATUS_START_VALID
     bnez    $11, @@await_start_valid
-     lw     cmd_w1_dram, OSTask + OSTask_output_buff
+     lw     cmd_w1_dram, OSTask + OS_TASK_OFF_OUTBUFF
 f3dzex_00001298:
     mfc0    $11, DPC_CURRENT
     beq     $11, cmd_w1_dram, f3dzex_00001298
@@ -1008,7 +1029,7 @@ f3dzex_000012BC:
     xori    rdpCmdBufEnd, rdpCmdBufEnd, rdpCmdBuffer1End ^ rdpCmdBuffer2End // Swap between the two RDP command buffers
     j       dma_read_write
      addi   rdpCmdBufPtr, rdpCmdBufEnd, -RDP_CMD_BUFSIZE
-.else // CFG_XBUS
+#else // CFG_XBUS
 check_rdp_buffer_full:
     addi $11, rdpCmdBufPtr, -(OSTask - RDP_CMD_BUFSIZE_EXCESS)
     blez $11, ovl0_04001284
@@ -1034,7 +1055,7 @@ ovl0_04001284:
 ovl0_0400129C:
     jr $ra
      nop
-.endif
+#endif
 
 .align 8
 ovl23_start:
@@ -1106,19 +1127,19 @@ clipping_skipswap23: // After possible swap, $19 = vtx not meeting clip cond / o
     vaddc   $v10, $v10, $v10[1h]      // frac: w += y (sum of all 4), vtx on screen - vtx off screen
     vadd    $v11, $v11, $v11[1h]      // int:  w += y (sum of all 4), vtx on screen - vtx off screen
     // Not sure what the first reciprocal is for.
-.if BUG_CLIPPING_FAIL_WHEN_SUM_ZERO   // Only in F3DEX2 2.04H
+#if BUG_CLIPPING_FAIL_WHEN_SUM_ZERO   // Only in F3DEX2 2.04H
     vrcph   $v29[0], $v11[3]          // int:  1 / (x+y+z+w), vtx on screen - vtx off screen
-.else
+#else
     vor     $v29, $v11, vOne[0]       // round up int sum to odd; this ensures the value is not 0, otherwise v29 will be 0 instead of +/- 2
     vrcph   $v3[3], $v11[3]
-.endif
+#endif
     vrcpl   $v2[3], $v10[3]           // frac: 1 / (x+y+z+w), vtx on screen - vtx off screen
     vrcph   $v3[3], vZero[0]          // get int result of reciprocal
-.if BUG_CLIPPING_FAIL_WHEN_SUM_ZERO   // Only in F3DEX2 2.04H
+#if BUG_CLIPPING_FAIL_WHEN_SUM_ZERO   // Only in F3DEX2 2.04H
     vabs    $v29, $v11, $v25[3] // 0x0002 // v29 = +/- 2 based on sum positive or negative (Bug: or 0 if sum is 0)
-.else
+#else
     vabs    $v29, $v29, $v25[3] // 0x0002 // v29 = +/- 2 based on sum positive (incl. zero) or negative
-.endif
+#endif
     vmudn   $v2, $v2, $v29[3]         // multiply reciprocal by +/- 2
     vmadh   $v3, $v3, $v29[3]
     veq     $v3, $v3, vZero[0]        // if reciprocal high is 0
@@ -1175,17 +1196,17 @@ clipping_skipswap23: // After possible swap, $19 = vtx not meeting clip cond / o
 clipping_after_vtxwrite:
 // outputVtxPos has been incremented by 2 * vtxSize
 // Store last vertex attributes which were skipped by the early return
-.if BUG_NO_CLAMP_SCREEN_Z_POSITIVE
+#if BUG_NO_CLAMP_SCREEN_Z_POSITIVE
     sdv     $v25[0],    (VTX_SCR_VEC    - 2 * vtxSize)(outputVtxPos)
-.else
+#else
     slv     $v25[0],    (VTX_SCR_VEC    - 2 * vtxSize)(outputVtxPos)
-.endif
+#endif
     ssv     $v26[4],    (VTX_SCR_Z_FRAC - 2 * vtxSize)(outputVtxPos)
     suv     vPairST[0], (VTX_COLOR_VEC  - 2 * vtxSize)(outputVtxPos)
     slv     vPairST[8], (VTX_TC_VEC     - 2 * vtxSize)(outputVtxPos)
-.if !BUG_NO_CLAMP_SCREEN_Z_POSITIVE          // Not in F3DEX2 2.04H
+#if !BUG_NO_CLAMP_SCREEN_Z_POSITIVE          // Not in F3DEX2 2.04H
     ssv     $v3[4],     (VTX_SCR_Z      - 2 * vtxSize)(outputVtxPos)
-.endif
+#endif
     addi    outputVtxPos, outputVtxPos, -vtxSize // back by 1 vtx so we are actually 1 ahead of where started
     addi    clipPolyWrite, clipPolyWrite, 2  // Original outputVtxPos was already written here; increment write ptr
 clipping_nextedge:
@@ -1205,16 +1226,16 @@ clipping_nextcond:
     sw      $zero, activeClipPlanes            // Disable all clipping planes while drawing tris
 clipping_draw_tris_loop:
     // Current polygon starts 6 (3 verts) below clipPolySelect, ends 2 (1 vert) below clipPolyWrite
-.if CFG_CLIPPING_SUBDIVIDE_DESCENDING
+#if CFG_CLIPPING_SUBDIVIDE_DESCENDING
     // Draws verts in pattern like 0-4-3, 0-3-2, 0-2-1. This also draws them with
     // the opposite winding as they were originally drawn with, possibly a bug?
     reg1 equ clipPolyWrite
     val1 equ -0x0002
-.else
+#else
     // Draws verts in pattern like 0-1-4, 1-2-4, 2-3-4
     reg1 equ clipPolySelect
     val1 equ 0x0002
-.endif
+#endif
     // Load addresses of three verts to draw; each vert may be in normal vertex array or temp buffer
     lhu     $1, (clipPoly - 6)(clipPolySelect)
     lhu     $2, (clipPoly - 4)(reg1)
@@ -1330,9 +1351,9 @@ vertices_store:
     // which is also first and second in the output list.
     // This is also in the first half and second half of vPairMVPPosI / vPairMVPPosF.
     // However, they are reversed in vPairST and the vector regs used for lighting.
-.if !BUG_NO_CLAMP_SCREEN_Z_POSITIVE        // Bugfixed version
+#if !BUG_NO_CLAMP_SCREEN_Z_POSITIVE        // Bugfixed version
     vge     $v3, $v25, vZero[0]            // Clamp Z to >= 0
-.endif
+#endif
     addi    $1, $1, -4                     // Decrement vertex count by 2
     vmudl   $v29, vPairMVPPosF, vVpMisc[4] // Persp norm
     // First time through, secondVtxPos is temp memory in the current RDP output buffer,
@@ -1343,26 +1364,26 @@ vertices_store:
     sbv     $v27[15],         (VTX_COLOR_A + 8 - 1 * vtxSize)($11) // In VTX_SCR_Y if fog disabled...
     vmadn   $v21, vZero, vZero[0]
     sbv     $v27[7],          (VTX_COLOR_A + 8 - 2 * vtxSize)($11) // ...which gets overwritten below
-.if !BUG_NO_CLAMP_SCREEN_Z_POSITIVE        // Bugfixed version
+#if !BUG_NO_CLAMP_SCREEN_Z_POSITIVE        // Bugfixed version
     vmov    $v26[1], $v3[2]
     ssv     $v3[12],          (VTX_SCR_Z      - 1 * vtxSize)(secondVtxPos)
-.endif
+#endif
     vmudn   $v7, vPairMVPPosF, vVpMisc[5]  // Clip ratio
-.if BUG_NO_CLAMP_SCREEN_Z_POSITIVE
+#if BUG_NO_CLAMP_SCREEN_Z_POSITIVE
     sdv     $v25[8],          (VTX_SCR_VEC    - 1 * vtxSize)(secondVtxPos)
-.else
+#else
     slv     $v25[8],          (VTX_SCR_VEC    - 1 * vtxSize)(secondVtxPos)
-.endif
+#endif
     vmadh   $v6, vPairMVPPosI, vVpMisc[5]  // Clip ratio
     sdv     $v25[0],          (VTX_SCR_VEC    - 2 * vtxSize)(secondVtxPos)
     vrcph   $v29[0], $v2[3]
     ssv     $v26[12],         (VTX_SCR_Z_FRAC - 1 * vtxSize)(secondVtxPos)
     vrcpl   $v5[3], $v21[3]
-.if BUG_NO_CLAMP_SCREEN_Z_POSITIVE
+#if BUG_NO_CLAMP_SCREEN_Z_POSITIVE
     ssv     $v26[4],          (VTX_SCR_Z_FRAC - 2 * vtxSize)(secondVtxPos)
-.else
+#else
     slv     $v26[2],          (VTX_SCR_Z      - 2 * vtxSize)(secondVtxPos)
-.endif
+#endif
     vrcph   $v4[3], $v2[7]
     ldv     $v3[0], 8(inputVtxPos)  // Load RGBARGBA for two vectors (was stored this way above)
     vrcpl   $v5[7], $v21[7]
@@ -1436,7 +1457,7 @@ vertices_store:
     bgtz    $1, vertices_process_pair
      vmadh  $v25, $v25, vVpFgScale      // int part, v25:v26 is now screen space pos
     bltz    $ra, clipping_after_vtxwrite // Return to clipping if from clipping
-.if !BUG_NO_CLAMP_SCREEN_Z_POSITIVE     // Bugfixed version
+#if !BUG_NO_CLAMP_SCREEN_Z_POSITIVE     // Bugfixed version
      vge    $v3, $v25, vZero[0]         // Clamp Z to >= 0
     slv     $v25[8],          (VTX_SCR_VEC    - 1 * vtxSize)(secondVtxPos)
     vge     $v27, $v25, $v31[3] // INSTR 1: Clamp W/fog to >= 0x7F00 (low byte is used)
@@ -1446,7 +1467,7 @@ vertices_store:
     ssv     $v3[12],          (VTX_SCR_Z      - 1 * vtxSize)(secondVtxPos)
     beqz    $7, run_next_DL_command
      ssv    $v3[4],           (VTX_SCR_Z      - 2 * vtxSize)(outputVtxPos)
-.else // This is the F3DEX2 2.04H version
+#else // This is the F3DEX2 2.04H version
      vge    $v27, $v25, $v31[3] // INSTR 1: Clamp W/fog to >= 0x7F00 (low byte is used)
     sdv     $v25[8],          (VTX_SCR_VEC    - 1 * vtxSize)(secondVtxPos)
     sdv     $v25[0],          (VTX_SCR_VEC    - 2 * vtxSize)(outputVtxPos)
@@ -1454,7 +1475,7 @@ vertices_store:
     ssv     $v26[12],         (VTX_SCR_Z_FRAC - 1 * vtxSize)(secondVtxPos)
     beqz    $7, run_next_DL_command
      ssv    $v26[4],          (VTX_SCR_Z_FRAC - 2 * vtxSize)(outputVtxPos)
-.endif
+#endif
     sbv     $v27[15],         (VTX_COLOR_A    - 1 * vtxSize)(secondVtxPos)
     j       run_next_DL_command
      sbv    $v27[7],          (VTX_COLOR_A    - 2 * vtxSize)(outputVtxPos)
@@ -1652,31 +1673,31 @@ flat_shading:
     vmov    dX[2], Diff_MH[0]                           ::  lbv     vtx_attrs_3_i[6], VTX_COLOR_A(v3_addr)
 shading_done:
     // these only changed position
-.if CFG_OLD_TRI_WRITE
+#if CFG_OLD_TRI_WRITE
     LSHIFT_5 equ $v30[6] // 1 << 5
     _16 equ $v30[5] // 16
     _0x100 equ $v30[7] // 0x100 ,   also used at the end of continue_light_dir_xfrm
-.else
+#else
     LSHIFT_5 equ $v30[7] // 1 << 5
     _16 equ $v30[6] // 16
     _0x100 equ $v30[3] // 0x100 ,   also used at the end of continue_light_dir_xfrm
-.endif
+#endif
 
     // dx and dy scales adjusted between versions, likely for increasing fractional precision
-.if CFG_OLD_TRI_WRITE
+#if CFG_OLD_TRI_WRITE
     dx_scale equ $v31[5] // 0x4000
     dy_scale equ $v31[2] // 8
-.else
+#else
     dx_scale equ $v30[2] // 0x1000
     dy_scale equ $v30[7] // 32
-.endif
+#endif
 
     // vcr VT input changed, not sure what this is for
-.if CFG_OLD_TRI_WRITE
+#if CFG_OLD_TRI_WRITE
     VCR_VT equ $v30[2] // 0x1CC
-.else
+#else
     VCR_VT equ $v30[3] // 0x100
-.endif
+#endif
 
     // this is only used when !CFG_OLD_TRI_WRITE however it cannot be defined there due to an armips bug
     _0xFFF8 equ $v30[5]
@@ -1750,14 +1771,14 @@ NR_temp_i equ $v17
     vmadn   NR_temp_f, inv_CrossProduct2_f, CrossProduct2_i ::  ori     $11, $6, G_TRI_FILL // Combine geometry mode (only the low byte will matter) with the base triangle type to make the triangle command id
     vmadh   NR_temp_i, inv_CrossProduct2_i, CrossProduct2_i ::  or      $11, $11, $9 // Incorporate whether textures are enabled into the triangle command id
 
-.if !CFG_OLD_TRI_WRITE
+#if !CFG_OLD_TRI_WRITE
     dXdY_f_2 equ $v22
     // drops lowest 3 bits of dxdy fraction
     vand    $v22, dXdY_f, _0xFFF8
-.else
+#else
     // leaves dxdy fraction as-is
     dXdY_f_2 equ dXdY_f
-.endif
+#endif
 
     // VCR_VT = (0x0100 or 0x01CC)
     vcr     dXdY_i, dXdY_i, VCR_VT      ::  sb      $11, 0x0000(rdpCmdBufPtr) // Store the triangle command id
@@ -1965,11 +1986,11 @@ culldl_loop:
     j       G_ENDDL_handler                   // If got here, there's some clipping plane where all verts are outside it; skip DL
 G_BRANCH_WZ_handler:
      lhu    vtxPtr, (vertexTable)(cmd_w0)     // get the address of the vertex being tested
-.if CFG_G_BRANCH_W                            // BRANCH_W/BRANCH_Z difference; this defines F3DZEX vs. F3DEX2
+#if CFG_G_BRANCH_W                            // BRANCH_W/BRANCH_Z difference; this defines F3DZEX vs. F3DEX2
     lh      vtxPtr, VTX_W_INT(vtxPtr)         // read the w coordinate of the vertex (f3dzex)
-.else
+#else
     lw      vtxPtr, VTX_SCR_Z(vtxPtr)         // read the screen z coordinate (int and frac) of the vertex (f3dex2)
-.endif
+#endif
     sub     $2, vtxPtr, cmd_w1_dram           // subtract the w/z value being tested
     bgez    $2, run_next_DL_command           // if vtx.w/z >= cmd w/z, continue running this DL
      lw     cmd_w1_dram, rdpHalf1Val          // load the RDPHALF1 value as the location to branch to
@@ -2042,7 +2063,7 @@ dma_write:
 // The action here is controlled by $1. If yielding, $1 > 0. If this was
 // G_LOAD_UCODE, $1 == 0. If we got to the end of the parent DL, $1 < 0.
 ovl0_start:
-.if !CFG_XBUS // FIFO version
+#if !CFG_XBUS // FIFO version
     sub     $11, rdpCmdBufPtr, rdpCmdBufEnd
     addiu   $12, $11, RDP_CMD_BUFSIZE - 1
     bgezal  $12, flush_rdp_buffer
@@ -2051,25 +2072,25 @@ ovl0_start:
      lw     $24, rdpFifoPos
     bltz    $1, taskdone_and_break  // $1 < 0 = Got to the end of the parent DL
      mtc0   $24, DPC_END            // Set the end pointer of the RDP so that it starts the task
-.else // CFG_XBUS
+#else // CFG_XBUS
     bltz    $1, taskdone_and_break  // $1 < 0 = Got to the end of the parent DL
      nop
-.endif
+#endif
     bnez    $1, task_yield          // $1 > 0 = CPU requested yield
      add    taskDataPtr, taskDataPtr, inputBufferPos // inputBufferPos <= 0; taskDataPtr was where in the DL after the current chunk loaded
 // If here, G_LOAD_UCODE was executed.
     lw      cmd_w1_dram, (inputBufferEnd - 0x04)(inputBufferPos) // word 1 = ucode code DRAM addr
-    sw      taskDataPtr, OSTask + OSTask_data_ptr // Store where we are in the DL
-    sw      cmd_w1_dram, OSTask + OSTask_ucode // Store pointer to new ucode about to execute
+    sw      taskDataPtr, OSTask + OS_TASK_OFF_DATA // Store where we are in the DL
+    sw      cmd_w1_dram, OSTask + OS_TASK_OFF_UCODE // Store pointer to new ucode about to execute
     la      dmemAddr, start         // Beginning of overwritable part of IMEM
     jal     dma_read_write          // DMA DRAM read -> IMEM write
      li     dmaLen, (while_wait_dma_busy - start) - 1 // End of overwritable part of IMEM
-.if CFG_XBUS
+#if CFG_XBUS
 ovl0_xbus_wait_for_rdp:
     mfc0 $11, DPC_STATUS
     andi $11, $11, DPC_STATUS_DMA_BUSY
     bnez $11, ovl0_xbus_wait_for_rdp // Keep looping while RDP is busy.
-.endif
+#endif
     lw      cmd_w1_dram, rdpHalf1Val // Get DRAM address of ucode data from rdpHalf1Val
     la      dmemAddr, spFxBase      // DMEM address is spFxBase
     andi    dmaLen, cmd_w0, 0x0FFF  // Extract DMEM length from command word
@@ -2077,16 +2098,16 @@ ovl0_xbus_wait_for_rdp:
     jal     dma_read_write          // initate DMA read
      sub    dmaLen, dmaLen, dmemAddr // End that much before the end of DMEM
     j       while_wait_dma_busy
-.if CFG_DONT_SKIP_FIRST_INSTR_NEW_UCODE
+#if CFG_DONT_SKIP_FIRST_INSTR_NEW_UCODE
     // Not sure why we skip the first instruction of the new ucode; in this ucode, it's
     // zeroing vZero, but maybe it could be something else in other ucodes. But, starting
     // actually at the beginning is only in 2.04H, so skipping is likely the intended
     // behavior. Maybe some other ucodes use this for detecting whether they were run
     // from scratch or called from another ucode?
      li     $ra, start
-.else
+#else
      li     $ra, start + 4
-.endif
+#endif
 
 .if . > start
     .error "ovl0_start does not fit within the space before the start of the ucode loaded with G_LOAD_UCODE"
@@ -2095,22 +2116,22 @@ ovl0_xbus_wait_for_rdp:
 ucode equ $11
 status equ $12
 task_yield:
-    lw      ucode, OSTask + OSTask_ucode
-.if !CFG_XBUS // FIFO version
+    lw      ucode, OSTask + OS_TASK_OFF_UCODE
+#if !CFG_XBUS // FIFO version
     sw      taskDataPtr, OS_YIELD_DATA_SIZE - 8
     sw      ucode, OS_YIELD_DATA_SIZE - 4
     li      status, SP_SET_SIG1 | SP_SET_SIG2   // yielded and task done signals
-    lw      cmd_w1_dram, OSTask + OSTask_yield_data_ptr
+    lw      cmd_w1_dram, OSTask + OS_TASK_OFF_YIELD
     li      dmemAddr, 0x8000 // 0, but negative = write
     li      dmaLen, OS_YIELD_DATA_SIZE - 1
-.else // CFG_XBUS
+#else // CFG_XBUS
     // Instead of saving the whole first OS_YIELD_DATA_SIZE bytes of DMEM,
     // XBUS saves only up to inputBuffer, as everything after that can be erased,
     // and because the RDP may still be using the output buffer, which is where
     // we'd have to write taskDataPtr and ucode.
     sw      taskDataPtr, inputBuffer // save these values for below, somewhere outside
     sw      ucode, inputBuffer + 4   // the area being written
-    lw      cmd_w1_dram, OSTask + OSTask_yield_data_ptr
+    lw      cmd_w1_dram, OSTask + OS_TASK_OFF_YIELD
     li      dmemAddr, 0x8000 // 0, but negative = write
     jal     dma_read_write
      li     dmaLen, inputBuffer - 1
@@ -2119,20 +2140,20 @@ task_yield:
     addiu   cmd_w1_dram, cmd_w1_dram, OS_YIELD_DATA_SIZE - 8
     li      dmemAddr, 0x8000 | inputBuffer // where they were saved above
     li      dmaLen, 8 - 1
-.endif
+#endif
     j       dma_read_write
      li     $ra, break
 
 taskdone_and_break:
     li      status, SP_SET_SIG2   // task done signal
 break:
-.if CFG_XBUS
+#if CFG_XBUS
 ovl0_xbus_wait_for_rdp_2:
     mfc0 $11, DPC_STATUS
     andi $11, $11, DPC_STATUS_DMA_BUSY
     bnez $11, ovl0_xbus_wait_for_rdp_2 // Keep looping while RDP is busy.
      nop
-.endif
+#endif
     mtc0    status, SP_STATUS
     break   0
     nop
@@ -2184,7 +2205,7 @@ do_moveword:
 
 G_POPMTX_handler:
     lw      $11, matrixStackPtr             // Get the current matrix stack pointer
-    lw      $2, OSTask + OSTask_dram_stack  // Read the location of the dram stack
+    lw      $2, OSTask + OS_TASK_OFF_STACK  // Read the location of the dram stack
     sub     cmd_w1_dram, $11, cmd_w1_dram           // Decrease the matrix stack pointer by the amount passed in the second command word
     sub     $1, cmd_w1_dram, $2                     // Subtraction to check if the new pointer is greater than or equal to $2
     bgez    $1, do_popmtx                   // If the new matrix stack pointer is greater than or equal to $2, then use the new pointer as is
@@ -2240,7 +2261,7 @@ G_MTX_handler:
     //  load type (multiply/load)
     //  push type (nopush/push)
     // In F3DEX2 (and by extension F3DZEX), G_MTX_PUSH is inverted, so 1 is nopush and 0 is push
-    andi    $11, cmd_w0, G_MTX_P_MV | G_MTX_NOPUSH_PUSH // Read the matrix type and push type flags into $11
+    andi    $11, cmd_w0, G_MTX_MV_P | G_MTX_NOPUSH_PUSH // Read the matrix type and push type flags into $11
     bnez    $11, load_mtx                               // If the matrix type is projection or this is not a push, skip pushing the matrix
      andi   $2, cmd_w0, G_MTX_MUL_LOAD                  // Read the matrix load type into $2 (0 is multiply, 2 is load)
     lw      cmd_w1_dram, matrixStackPtr                 // Set up the DMA from dmem to rdram at the matrix stack pointer
@@ -2394,17 +2415,17 @@ vPairNZ equ $v5
 
 light_vtx:
     vadd    vPairNY, vZero, vPairRGBATemp[1h] // Move vertex normals Y to separate reg
-.if CFG_POINT_LIGHTING
+#if CFG_POINT_LIGHTING
     luv     ltColor[0], (ltBufOfs + lightSize + 0)(curLight) // Init to ambient light color
-.else
+#else
     lpv     $v20[0], (ltBufOfs - lightSize + 0x10)(curLight) // Load next below transformed light direction as XYZ_XYZ_ for lights_dircoloraccum2
-.endif
+#endif
     vadd    vPairNZ, vZero, vPairRGBATemp[2h] // Move vertex normals Z to separate reg
     luv     vPairRGBA[0], 8(inputVtxPos)      // Load both verts' XYZAXYZA as unsigned
     vne     $v4, $v31, $v31[3h]               // Set VCC to 11101110
-.if !CFG_POINT_LIGHTING
+#if !CFG_POINT_LIGHTING
     luv     ltColor[0], (ltBufOfs + lightSize + 0)(curLight) // Init to ambient light color
-.else
+#else
     andi    $11, $5, G_LIGHTING_POSITIONAL_H  // check if point lighting is enabled in the geometry mode
     beqz    $11, directional_lighting         // If not enabled, use directional algorithm for everything
      li     curMatrix, mvpMatrix + 0x8000     // Set flag in negative to indicate cur mtx is MVP
@@ -2614,7 +2635,7 @@ light_point:
     j       after_dirorpoint_loop
 directional_lighting:
      lpv     $v20[0], (ltBufOfs - lightSize + 0x10)(curLight) // Load next light transformed dir; this value is overwritten with the same thing
-.endif
+#endif
 
 // Loop for dot product normals and multiply-add color for 2 lights
 // curLight starts pointing to the top light, and v2 and v20 already have the dirs
@@ -2672,11 +2693,11 @@ lights_texgenmain:
     vmulf   $v4, vPairST, vPairST       // ST squared
     vmulf   $v3, vPairST, $v31[7]       // Move to accumulator
     vmacf   $v3, vPairST, $v2[2]        // + ST * coefficient 0x6CB3
-.if BUG_TEXGEN_LINEAR_CLOBBER_S_T
+#if BUG_TEXGEN_LINEAR_CLOBBER_S_T
     vmudh   vPairST, vOne, $v31[5]      // Clobber S, T with 0x4000 each
-.else
+#else
     vmudh   $v21, vOne, $v31[5]         // Initialize accumulator with 0x4000 each (v21 discarded)
-.endif
+#endif
     vmacf   vPairST, vPairST, $v2[1]    // + ST * coefficient 0x44D3
     j       vertices_store
      vmacf  vPairST, $v4, $v3           // + ST squared * (ST + ST * coeff)
