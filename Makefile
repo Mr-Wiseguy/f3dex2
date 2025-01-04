@@ -2,6 +2,21 @@ MAKEFLAGS += --no-builtin-rules
 MAKEFLAGS += --no-builtin-variables
 .SUFFIXES:
 
+# Build Options:
+#   Path to armips executable, default requires it to be installed on the system
+ARMIPS ?= armips
+#   Build directory
+BUILD_DIR ?= ./build
+#   Path to libultra headers, default is the bundled headers in PR/
+PR_HEADERS ?= PR
+#   Path to common rsp headers, default is the bundled headers in rsp/
+RSP_HEADERS ?= rsp
+#   Extra flags to cpp
+CPPFLAGS ?=
+
+CPP := cpp -P
+INCLUDES := -I$(PR_HEADERS) -I$(RSP_HEADERS) -I$(PR_HEADERS)/..
+
 default:
 	@echo 'How to use this Makefile'
 	@echo 'Method 1) Select a microcode, just run e.g. `make F3DZEX_NoN_2.06H`'
@@ -37,10 +52,8 @@ ALL_OPTIONS := \
   BUG_TEXGEN_LINEAR_CLOBBER_S_T \
   BUG_WRONG_INIT_VZERO \
   BUG_FAIL_IF_CARRY_SET_AT_INIT
-  
-ARMIPS ?= armips
-PARENT_OUTPUT_DIR ?= ./build
-ifeq ($(PARENT_OUTPUT_DIR),.)
+
+ifeq ($(BUILD_DIR),.)
   $(error Cannot build directly in repo directory; see Makefile for details.)
   # The problem is that we want to be able to have targets like F3DEX2_2.08,
   # but this would also be the directory itself, whose existence and possible
@@ -48,7 +61,7 @@ ifeq ($(PARENT_OUTPUT_DIR),.)
   # the Makefile where the directory is the main target for that microcode, but
   # this has worse behavior in case of modification to the directory. Worse, if
   # it was done this way, then it would break if the user tried to set
-  # PARENT_OUTPUT_DIR anywhere else. So, better to support building everywhere
+  # BUILD_DIR anywhere else. So, better to support building everywhere
   # but here than to support only building here.
 endif
 
@@ -62,7 +75,7 @@ SUCCESS := $(GREEN)
 FAILURE := $(RED)
 WARNING := $(YELLOW)
 
-$(PARENT_OUTPUT_DIR):
+$(BUILD_DIR):
 	@printf "$(INFO)Creating parent output directory$(NO_COL)\n"
 ifeq ($(OS),Windows_NT)
 	mkdir $@
@@ -92,11 +105,13 @@ define ucode_rule
   ifeq ($(NAME),)
    $$(error Microcode name not set!)
   endif
-  UCODE_OUTPUT_DIR := $(PARENT_OUTPUT_DIR)/$(NAME)
-  CODE_FILE := $$(UCODE_OUTPUT_DIR)/$(NAME).code
-  DATA_FILE := $$(UCODE_OUTPUT_DIR)/$(NAME).data
-  SYM_FILE  := $$(UCODE_OUTPUT_DIR)/$(NAME).sym
-  TEMP_FILE := $$(UCODE_OUTPUT_DIR)/$(NAME).tmp.s
+  UCODE_OUTPUT_DIR := $(BUILD_DIR)/$(NAME)
+  PREPROCESSED_FILE := $$(UCODE_OUTPUT_DIR)/$(NAME).S
+  DEP_FILE          := $$(UCODE_OUTPUT_DIR)/$(NAME).d
+  CODE_FILE         := $$(UCODE_OUTPUT_DIR)/$(NAME).code
+  DATA_FILE         := $$(UCODE_OUTPUT_DIR)/$(NAME).data
+  SYM_FILE          := $$(UCODE_OUTPUT_DIR)/$(NAME).sym
+  TEMP_FILE         := $$(UCODE_OUTPUT_DIR)/$(NAME).tmp.s
   ALL_UCODES += $(NAME)
   ifneq ($(MD5_CODE),)
    ALL_UCODES_WITH_MD5S += $(NAME)
@@ -107,12 +122,17 @@ define ucode_rule
   $$(foreach option,$(OPTIONS),$$(eval OPTIONS_EQU += -equ $$(option) 1))
   OFF_OPTIONS_EQU := 
   $$(foreach o2,$$(OFF_OPTIONS),$$(eval OFF_OPTIONS_EQU += -equ $$(o2) 0))
+  OPTIONS_DEFS := 
+  $$(foreach option,$(OPTIONS),$$(eval OPTIONS_DEFS += -D$$(option)=1))
+  OFF_OPTIONS_DEFS := 
+  $$(foreach o2,$$(OFF_OPTIONS),$$(eval OFF_OPTIONS_DEFS += -D$$(o2)=0))
+  CPP_DEFS := -D_LANGUAGE_ASSEMBLY -DF3DEX_GBI_2 $$(OPTIONS_DEFS) $$(OFF_OPTIONS_DEFS)
   ARMIPS_CMDLINE := \
    -strequ CODE_FILE $$(CODE_FILE) \
    -strequ DATA_FILE $$(DATA_FILE) \
    $$(OPTIONS_EQU) \
    $$(OFF_OPTIONS_EQU) \
-   f3dex2.s \
+   $$(PREPROCESSED_FILE) \
    -sym2 $$(SYM_FILE) \
    -temp $$(TEMP_FILE)
   # Microcode target
@@ -136,12 +156,18 @@ define ucode_rule
   # targeting CODE_FILE even though we also want DATA_FILE, because target-
   # specific variables may not work as expected with multiple targets from one
   # recipe.
+  $$(PREPROCESSED_FILE): PREPROCESSED_FILE:=$$(PREPROCESSED_FILE)
+  $$(PREPROCESSED_FILE): CPP_DEFS:=$$(CPP_DEFS)
   $$(CODE_FILE): ARMIPS_CMDLINE:=$$(ARMIPS_CMDLINE)
+  $$(CODE_FILE): PREPROCESSED_FILE:=$$(PREPROCESSED_FILE)
   $$(CODE_FILE): CODE_FILE:=$$(CODE_FILE)
   $$(CODE_FILE): DATA_FILE:=$$(DATA_FILE)
+  -include $$(DEP_FILE)
   # Target recipe
-  $$(CODE_FILE): ./f3dex2.s ./rsp/* ucodes_database.mk $(EXTRA_DEPS) | $$(UCODE_OUTPUT_DIR)
+  $$(PREPROCESSED_FILE): ./f3dex2.s ucodes_database.mk $(EXTRA_DEPS) | $$(UCODE_OUTPUT_DIR)
 	@printf "$(INFO)Building microcode: $(NAME): $(DESCRIPTION)$(NO_COL)\n"
+	@$(CPP) $(CPPFLAGS) $$(CPP_DEFS) -MT $$(PREPROCESSED_FILE) -MMD $(INCLUDES) ./f3dex2.s -o $$(PREPROCESSED_FILE)
+  $$(CODE_FILE): $$(PREPROCESSED_FILE) ucodes_database.mk $(EXTRA_DEPS) | $$(UCODE_OUTPUT_DIR)
 	@$(ARMIPS) -strequ ID_STR "$(ID_STR)" $$(ARMIPS_CMDLINE)
   ifneq ($(MD5_CODE),)
 	@(printf "$(MD5_CODE) *$$(CODE_FILE)" | md5sum --status -c -) && printf "  $(SUCCESS)$(NAME) code matches$(NO_COL)\n" || printf "  $(FAILURE)$(NAME) code differs$(NO_COL)\n"
